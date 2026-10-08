@@ -19,7 +19,11 @@ services:
       context: .
       dockerfile: Dockerfile
     image: crashball:latest
-    container_name: crashball
+
+    # Sin container_name a propósito: Dokploy gestiona los nombres y les pone
+    # su propio prefijo. Fijar un nombre clashes si el despliegue se repite o si
+    # hay dos instancias, y el error resultante ("nombre ya en uso") no tiene nada
+    # que ver con el juego.
 
     # Reinicio salvo que Dokploy lo pare a mano: es un servidor de juego, si el
     # proceso se cae debe volver sin que nadie esté mirando.

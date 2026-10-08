@@ -374,6 +374,28 @@ por `https`.
 En Dokploy, el dominio apunta a `crashball:8080` (nombre del servicio y puerto
 interno), no a un puerto del host.
 
+**Créala por dominio, no por puerto.** En el formulario de Dokploy, la opción
+"Port" reserva un puerto del host, y ahí sí puede chocar con otra aplicación. La
+opción "Domain" enruta por la red interna, que es lo que hace que esto no toque
+nada.
+
+#### Leer la lista de `docker ps` sin dad'sarfarse
+
+Con muchas apps la lista parece que todo choca, pero no. Solo exportan puertos
+del host los que tienen el formato `0.0.0.0:P->P/tcp`:
+
+| Lo que ves | Significa | ¿Choca? |
+|---|---|---|
+| `0.0.0.0:5678->5678/tcp` | Puerto **del host** reservado | Sí, ahí no puedes poner nada |
+| `8080/tcp` | Puerto solo **dentro** del contenedor | No, cada contenedor tiene su propio espacio |
+
+Ese `8080/tcp` que aparece en varios contenedores no significa que el 8080 esté
+ocupado en el host. Para ver solo lo que sí está reservado:
+
+```bash
+docker ps --format '{{.Names}}\t{{.Ports}}' | grep -E '[0-9]+->' 
+```
+
 ---
 
 ## Protocolo

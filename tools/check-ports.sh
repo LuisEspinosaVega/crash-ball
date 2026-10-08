@@ -89,7 +89,10 @@ check_port() {
     printf '  %sDocker%s   : el 8080 interno del contenedor no puede chocar con\n' "$DIM" "$OFF"
     printf '                nada del host (cada contenedor tiene su espacio).\n'
     printf '  %sAviso%s    : Dokploy enruta el dominio por la red interna, así que\n' "$DIM" "$OFF"
-    printf '                CrashBall no necesita puerto del host.\n\n'
+    printf '                CrashBall no necesita puerto del host.\n'
+    printf '  %sAtención%s  : en Dokploy, crea la app por DOMINIO, no por PUERTO.\n' "$YELLOW" "$OFF"
+    printf '                La opción "Port" reserva un puerto del host, y ahí sí\n'
+    printf '                puede chocar con otra app.\n\n'
 
     in_use=0
     if printf '%s\n' "$LISTEN" | grep -qx "$port"; then
