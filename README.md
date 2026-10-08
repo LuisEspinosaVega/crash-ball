@@ -189,8 +189,17 @@ space-ball/
 │   ├── input-test.mjs    # teclas reales y delay de respuesta (4 asientos)
 │   ├── camera-test.mjs   # el muro del jugador queda de frente en 4 asientos
 │   ├── click-debug.mjs   # diagnóstico de botones con clics de ratón reales
-│   └── shots.mjs         # capturas de cada pantalla, para revisar el diseño
+│   ├── shots.mjs         # capturas de cada pantalla, para revisar el diseño
+│   ├── proxy-test.mjs    # el servidor aguanta un proxy inverso real
+│   ├── tunnel-test.mjs   # destino que acepta y no contesta: el fallo real
+│   ├── tunnel-ui-test.mjs # la interfaz explica ese fallo en vez de callarse
+│   ├── tunnel-live-test.mjs # contra un túnel real de Internet
+│   ├── isolation-test.mjs  # convive con otra app que usa el puerto del host
+│   └── check-ports.sh    # qué puertos usa el VPS, antes de desplegar
 ├── legacy/               # copia del árbol original, antes de las correcciones
+├── Dockerfile            # build multi-etapa, runtime mínimo
+├── docker-compose.yml    # para Dokploy (no publica puertos del host)
+├── .dockerignore
 ├── CMakeLists.txt
 └── Makefile              # atajos opcionales (requiere GNU Make, no CMake)
 ```
@@ -304,6 +313,66 @@ no funciona es el de VS Code, y no por configuración: es un límite suyo.
 Para distinguirlo rápido: si la página carga pero el socket no, el servidor
 está bien y el salto no llega. El juego ahora avisa de esto solo, en vez de
 quedarse cargando en silencio (ver «Aviso de conexión» más abajo).
+
+---
+
+## Desplegar en un VPS con Dokploy
+
+Hay un `Dockerfile` y un `docker-compose.yml` listos. En Dokploy: **New
+Application → Compose**, apunta al repositorio y ya está; no hay que configurar
+la imagen a mano.
+
+La imagen compila el C++17 con CMake en una etapa aparte y entrega un runtime
+mínimo con solo el binario y `public/`: nada de Node, nginx ni shell en la
+imagen final. La build ejecuta `--selftest`, así que si el binario se rompe al
+compilar en Linux el despliegue falla ahí y no con un servidor raro en producción.
+
+### No toca ninguna de tus otras aplicaciones
+
+Es lo importante, y está decidido a propósito: **el compose no publica ningún
+puerto del host** (no hay sección `ports`). Dokploy enruta el dominio al
+contenedor por la red interna, así que no hace falta.
+
+Publicar un puerto del host es la única forma que tiene esta app de molestar a
+otra, y el síntoma es malo: el despliegue falla con `port is already
+allocated` —error que no dice qué lo ocupa—, o Dokploy reasigna el puerto por su
+cuenta y deja la app a medias. Verificado reproducido:
+
+```
+otra-app  ->  127.0.0.1:8080  (ya en uso)
+lanzar CrashBall con ports:  ->  Bind for 127.0.0.1:8080 failed: port is already allocated
+```
+
+Sin publicar nada, cada contenedor vive en su propio espacio de puertos:
+CrashBall usa `8080` dentro de sí mismo y no se entera de qué más hay en el VPS.
+`tools/isolation-test.mjs` levanta las dos aplicaciones a la vez y comprueba que
+conviven (7/7).
+
+### Comprobar puertos antes de desplegar
+
+```bash
+bash tools/check-ports.sh          # qué está usando el VPS
+bash tools/check-ports.sh 18080    # ¿está libre el 18080?
+```
+
+Lista los puertos publicados por tus contenedores y los que están escuchando en
+el host, y avisa de los puertos típicos de Dokploy (`3000`, `8080`, `80`, `443`)
+para que no los pises. No hace falta root.
+
+### Configuración
+
+| Variable | Por defecto | Para qué |
+|----------|-------------|----------|
+| `PORT` | `8080` | Puerto interno. No hace falta cambiarlo |
+| `DIFFICULTY` | `hard` | `easy`, `normal` o `hard` |
+| `ROUNDS` | `3` | Rondas para ganar (1-9) |
+
+El TLS lo termina el proxy de Dokploy, así que el contenedor no necesita
+certificados ni HTTPS: el cliente negocia `wss://` solo porque la página llega
+por `https`.
+
+En Dokploy, el dominio apunta a `crashball:8080` (nombre del servicio y puerto
+interno), no a un puerto del host.
 
 ---
 
@@ -533,6 +602,7 @@ Estado actual, medido sobre esta build (MSVC, Windows, `easy`, 1 ronda):
 | `tunnel-test.mjs` | **3/3** |
 | `tunnel-ui-test.mjs` | **6/6** |
 | `tunnel-live-test.mjs` | **3/3** |
+| `isolation-test.mjs` | **7/7** |
 | `server.exe --selftest` | **9/9** |
 
 `proxy-test.mjs` pone el servidor detrás de un proxy inverso real y comprueba que
@@ -546,6 +616,8 @@ invisible. `tunnel-ui-test.mjs` verifica que la interfaz explica la causa.
 `tunnel-live-test.mjs` mide contra un túnel real de Internet (recibe la URL como
 argumento) y `browser-test.mjs` recorre el juego entero a través de él. Son las
 dos que dicen si se puede jugar desde fuera, no solo si el servidor funciona.
+`isolation-test.mjs` levanta CrashBall junto a otra aplicación que ya ocupa el
+puerto del host y comprueba que conviven sin tocarse.
 
 `--selftest` incluye una comprobación del apagado: mide en milisegundos que el
 hilo lector se suelta al ver la bandera de parada. Es la única forma fiable de

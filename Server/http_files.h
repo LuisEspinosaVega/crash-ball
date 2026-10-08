@@ -10,6 +10,7 @@
 #define CRASHBALL_HTTP_FILES_H
 
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -18,7 +19,20 @@ namespace httpfiles {
 
 // Directory that contains index.html. Probed at startup so the server works
 // whether it is launched from the project root, from build/, or from an IDE.
+//
+// PUBLIC_DIR overrides the probing. It exists because inside a container the
+// working directory is fixed and the relative paths above do not apply; without
+// it the server starts and then serves nothing, which looks exactly like a
+// broken deployment.
 inline std::string findPublicDir() {
+    if (const char* configured = std::getenv("PUBLIC_DIR")) {
+        if (configured[0] != '\0') {
+            std::ifstream probe(std::string(configured) + "/index.html",
+                                std::ios::binary);
+            return probe.good() ? std::string(configured) : std::string();
+        }
+    }
+
     static const char* kCandidates[] = {
         "public",
         "../public",

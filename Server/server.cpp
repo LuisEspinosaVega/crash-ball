@@ -1663,6 +1663,14 @@ int selftest() {
 // ─── Entry point ───────────────────────────────────────────────────
 
 int main(int argc, char** argv) {
+    // Salida sin búfer: cuando la salida estándar es una tubería —un contenedor,
+    // un servicio, una redirección— la biblioteca C la bufferiza entera y no
+    // aparece ni una línea hasta que el proceso acaba. En un despliegue eso
+    // significa `docker logs` vacío y ningún aviso de arranque, que es
+    // justo lo que hace falta para diagnosticar un contenedor que no levanta.
+    std::cout << std::unitbuf;
+    std::cerr << std::unitbuf;
+
     setUtf8Console();
     setHighResolutionTimer(true);
     installSignalHandlers();

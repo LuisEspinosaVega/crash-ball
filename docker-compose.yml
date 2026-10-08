@@ -1,0 +1,76 @@
+# Crash Ball Arena — despliegue con Dokploy
+#
+# Dokploy lee este fichero tal cual (Docker Compose). Todo lo importante está en
+# las variables de entorno: Dokploy deja definirlas en la interfaz y se aplican
+# en cada redeploy.
+#
+# Variables disponibles (todas opcionales, con valores por defecto):
+#   PORT         puerto interno. Déjalo en 8080 salvo razón buena.
+#   DIFFICULTY   easy | normal | hard      (por defecto hard)
+#   ROUNDS       1-9, rondas para ganar    (por defecto 3)
+#
+# El proxy inverso de Dokploy termina el TLS y publica el dominio. Por eso el
+# contenedor NO necesita certificados ni HTTPS: el cliente negocia wss:// solo
+# porque la página llega por https.
+
+services:
+  crashball:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: crashball:latest
+    container_name: crashball
+
+    # Reinicio salvo que Dokploy lo pare a mano: es un servidor de juego, si el
+    # proceso se cae debe volver sin que nadie esté mirando.
+    restart: unless-stopped
+
+    environment:
+      PORT: "8080"
+      DIFFICULTY: "${DIFFICULTY:-hard}"
+      ROUNDS: "${ROUNDS:-3}"
+      # Explícito porque el directorio de trabajo de un contenedor es fijo. Sin
+      # esto el servidor arranca igual pero no encuentra los archivos del juego
+      # y no sirve nada: un fallo silencioso que parece un problema de red.
+      PUBLIC_DIR: /app/public
+
+    # ── Sin `ports` a propósito ──────────────────────────────────────
+    #
+    # Dokploy enruta el dominio al contenedor por la red interna, así que no
+    # hace falta publicar nada en el host. Y esto es lo importante: publicar un
+    # puerto del host es la única forma que tiene esta app de tocar las demás.
+    # Si otra aplicación ya usa ese puerto, el despliegue falla con
+    # "port is already allocated", y además Dokploy puede intentar arreglarlo
+    # cambiando el puerto por su cuenta y dejando la app medio configurada.
+    #
+    # Sin publicar nada, cada contenedor vive en su propio espacio de puertos:
+    # CrashBall usa 8080 dentro de sí mismo y no se entera de qué más hay en el
+    # VPS. No puede interferir con tus otras aplicaciones porque no comparte con
+    # ellas ni un puerto.
+    #
+    # Para probarlo en local sin Dokploy, levanta el contenedor con:
+    #   docker compose run --service-ports ...   (no publica nada)
+    #   docker run -p 127.0.0.1:18080:8080 ...  (elige un puerto libre)
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+    logging:
+      driver: json-file
+      options:
+        # Sin tope, el log de un contenedor no para nunca. Con estos valores
+        # se queda en unos 10 MB en vez de crecer sin límite.
+        max-size: "10m"
+        max-file: "3"
+
+    # El servidor abre un socket por conexión entrante, así que el límite de
+    # ficheros importa en un VPS pequeño. Este valor aguanta de sobra para las
+    # partidas de 4 jugadores que caben en una sala.
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096

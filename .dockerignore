@@ -1,0 +1,39 @@
+# Contexto de build: lo que se copia al daemon de Docker.
+#
+# Sin esto se manda build/, que en Windows pesa gigas, y el despliegue se
+# arrastra. También evita que un binario de Windows compilado aquí se cuele en
+# la imagen de Linux, que es un error que no se ve hasta que falla.
+
+# Artefactos de compilación local
+build/
+build-*/
+Release/
+Debug/
+RelWithDebInfo/
+MinSizeTrimming/
+*.vcxproj
+*.vcxproj.filters
+*.sln
+*.obj
+*.o
+*.exe
+*.pdb
+
+# Git y editores: no hacen falta para construir
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# Documentación y pruebas: no se ejecutan dentro del contenedor
+README.md
+tools/
+
+# Sistema
+Dockerfile
+.dockerignore
+node_modules/
+*.log
