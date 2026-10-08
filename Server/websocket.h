@@ -21,6 +21,7 @@
 #include "net.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -210,6 +211,44 @@ public:
     void setReceiveWait(int millis) { readWaitMs_ = millis; }
 
     /**
+     * Espera troceada con un límite total.
+     *
+     * Es lo que hace que apagar el servidor sea rápido. Cerrar un socket desde
+     * otro hilo NO despierta a un select() que ya está esperando en él, así que
+     * un hilo lector con espera larga se queda ahí colgado tras el Ctrl+C: el
+     * proceso no termina hasta que la espera expira sola. Con la espera
+     * troceada, el hilo vuelve al bucle cada `sliceMs`, comprueba la bandera de
+     * parada y sale.
+     *
+     * `totalMs` es el máximo que se admite en total; 0 significa "sin límite".
+     * Se usa para las conexiones HTTP keep-alive, que si no retardarían el
+     * apagado quince segundos.
+     */
+    void setReadSlices(int sliceMs, int totalMs) {
+        readWaitMs_ = sliceMs;
+        readBudgetMs_ = totalMs;
+        readStartMs_ = nowMs();
+    }
+
+    /** Espera restante; el hilo lector la usa para no pasarse del total. */
+    int remainingReadMs() const {
+        if (readBudgetMs_ <= 0) return readWaitMs_;
+        const int64_t left = readBudgetMs_ - (nowMs() - readStartMs_);
+        return left <= 0 ? 0 : static_cast<int>(left);
+    }
+
+    /**
+     * True si la última recvText() terminó por espera, no porque el peer
+     * cortara la conexión.
+     *
+     * Hace falta porque el hilo lector no puede quedarse esperando para
+     * siempre: cerrar el socket desde otro hilo no despierta al select() en
+     * curso. Con espera troceada cada vuelta mira la bandera de parada y el
+     * hilo sale solo.
+     */
+    bool lastReadTimedOut() const { return readTimedOut_; }
+
+    /**
      * Contador de tráfico entrante. Sube con cada recv() con éxito, Includes
      * pong y ping, no solo texto.
      *
@@ -377,7 +416,10 @@ public:
 
     void close() {
         if (sock_ != net::kInvalidSocket) {
-            net::closeSocket(sock_);
+            // shutdown() antes que close(): es lo que despierta de forma fiable
+            // a un hilo lector que esté bloqueado en este socket. Cerrar sin
+            // más deja el select() colgado de forma intermitente en Windows.
+            net::closeSocketAndWake(sock_);
             sock_ = net::kInvalidSocket;
         }
         in_.clear();
@@ -392,16 +434,40 @@ private:
 
     net::socket_t sock_ = net::kInvalidSocket;
     int readWaitMs_ = net::kWaitForever;
+    int readBudgetMs_ = 0;        // 0 = sin límite total
+    int64_t readStartMs_ = 0;     // arranque del tramo actual
+    bool readTimedOut_ = false;   // el último fill() agotó la espera
     std::atomic<unsigned long long> activity_{0};
     std::string in_;        // received but unconsumed bytes
     std::string fragment_;  // accumulates continuation frames
+
+    // Límite actual de espera por lectura: el trozo, recortado por el total.
+    int currentWaitMs() const {
+        if (readWaitMs_ == net::kWaitForever) return readWaitMs_;
+        const int64_t left = readBudgetMs_ > 0
+            ? readBudgetMs_ - (nowMs() - readStartMs_)
+            : readWaitMs_;
+        return left < readWaitMs_ ? static_cast<int>(left) : readWaitMs_;
+    }
+
+    static int64_t nowMs() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    }
 
     bool fill() {
         // The socket itself is non-blocking so that writes stay non-blocking;
         // the wait here is what makes this read block exactly like before.
         if (readWaitMs_ != 0) {
-            const int ready = net::waitReadable(sock_, readWaitMs_);
-            if (ready <= 0) return false;   // timed out or the socket died
+            const int ready = net::waitReadable(sock_, currentWaitMs());
+            if (ready == 0) {
+                // Espera agotada sin datos: no es un cierre. Se distingue para
+                // que el hilo lector pueda volver a mirar la bandera de parada.
+                readTimedOut_ = true;
+                return false;
+            }
+            if (ready < 0) return false;   // el socket murió
         }
 
         char buf[8192];
@@ -410,6 +476,7 @@ private:
             if (n < 0 && net::wouldBlock()) return false;
             return false;
         }
+        readTimedOut_ = false;
         activity_.fetch_add(1, std::memory_order_relaxed);
         in_.append(buf, static_cast<size_t>(n));
         return true;

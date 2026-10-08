@@ -81,6 +81,11 @@ constexpr size_t kMaxRooms = 32;
 constexpr int kHttpIdleTimeoutMs = 15000;
 constexpr int kMaxRequestsPerConnection = 64;
 
+// Trozo de espera del hilo lector de un WebSocket. Corto a propósito: es lo
+// que tarda el proceso en soltarse al pulsar Ctrl+C, porque cerrar el socket no
+// despierta a un select() en curso.
+constexpr int kReadSliceMs = 200;
+
 std::atomic<bool> g_stop{false};
 
 int64_t nowMs() {
@@ -89,6 +94,9 @@ int64_t nowMs() {
         .count();
 }
 
+// El manejador de señales solo pone la bandera (no es seguro hacer nada más
+// desde un manejador). Lo que hay que garantizar es que el proceso termine
+// rápido: por eso los hilos lectores esperan troceados y comprueban la bandera.
 extern "C" void onSignal(int) {
     g_stop.store(true);
 }
@@ -377,10 +385,14 @@ private:
         // upgrading. Keep serving files until the request is actually a WebSocket
         // upgrade: a client may send the upgrade on a connection it already used
         // for HTTP, and answering that with a static file breaks the handshake.
-        client->ws.setReceiveWait(kHttpIdleTimeoutMs);
+        // Una conexión HTTP keep-alive que el navegador abandona se queda
+        // abierta hasta 15 s. Con la espera troceada, cada vuelta del bucle
+        // comprueba la bandera de parada, así que el Ctrl+C no tiene que
+        // esperar a que caduquen una a una.
+        client->ws.setReadSlices(kReadSliceMs, kHttpIdleTimeoutMs);
 
         int served = 0;
-        while (!isWebSocketUpgrade(header)) {
+        while (running_ && !g_stop.load() && !isWebSocketUpgrade(header)) {
             if (!serveStaticRequest(client, header)) {
                 dropClient(client);
                 return;
@@ -414,16 +426,23 @@ private:
         }
         client->webSocketReady.store(true);
 
-        // The idle timeout exists only to reap abandoned HTTP connections; a
-        // WebSocket must be able to sit quiet for as long as the player wants.
-        client->ws.setReceiveWait(net::kWaitForever);
+        // Un WebSocket debe poder quedarse callado todo el rato que quiera el
+        // jugador: aquí no hay límite total, solo trozos. Cada vuelta del bucle
+        // comprueba la bandera de parada, así que el hilo sale en cuanto el
+        // servidor se apaga.
+        client->ws.setReadSlices(kReadSliceMs, 0);
 
         enqueue(client, proto::hello(client->id, client->sessionId));
 
         std::string text;
         std::string pongPayload;
-        while (running_ && !g_stop.load() && client->alive.load() &&
-               client->ws.recvText(text)) {
+        while (running_ && !g_stop.load() && client->alive.load()) {
+            if (!client->ws.recvText(text)) {
+                // Espera agotada: no es un cierre, solo que el jugador lleva un
+                // rato sin hablar. Se sigue.
+                if (client->ws.lastReadTimedOut()) continue;
+                break;
+            }
             if (client->ws.takePendingPong(pongPayload)) {
                 enqueueFrame(client, WebSocket::kOpPong, pongPayload);
             }
@@ -1439,11 +1458,21 @@ private:
             client->ws.close();
         }
 
-        for (int i = 0; i < 200 && activeClients_.load() > 0; ++i) {
+        // Los hilos lectores duermen en trozos de kReadSliceMs, así que en cuanto ven la
+        // bandera de parada salen solos. El margen es corto a propósito: si
+        // alguno se resiste, se informa y se sale igualmente, porque un proceso
+        // que no termina con el Ctrl+C deja el puerto pillado y el siguiente
+        // arranque parece fallar.
+        for (int i = 0; i < 100 && activeClients_.load() > 0; ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
-        std::cout << "\nServidor detenido.\n";
+        const int stuck = activeClients_.load();
+        std::cout << "\nServidor detenido.";
+        if (stuck > 0) {
+            std::cout << " (" << stuck << " conexión(es) sin cerrar todavía)";
+        }
+        std::cout << "\n";
     }
 };
 
@@ -1463,6 +1492,12 @@ Difficulty parseDifficulty(const std::string& text, bool& ok) {
 // miserable to debug from a browser: the handshake hash (a wrong
 // Sec-WebSocket-Accept makes every client refuse to connect), base64, and the
 // room-code alphabet. Cheap, offline, and it catches regressions in seconds.
+//
+// It also checks the shutdown path, because "Ctrl+C hangs" cannot be reproduced
+// by hand on Windows and used to ship broken: it relies on a real console
+// event. This measures the thing that actually matters instead — whether a
+// reader thread blocked waiting on a socket wakes up when that socket is closed
+// from another thread, which is what used to leave the process hanging.
 
 std::string sha1Hex(const std::string& text) {
     Sha1 sha;
@@ -1487,6 +1522,14 @@ int selftest() {
         if (!ok) ++failures;
         std::cout << (ok ? "PASS  " : "FAIL  ") << what << "  -- " << got;
         if (!ok) std::cout << " (esperado " << want << ")";
+        std::cout << "\n";
+    };
+    // Igual, pero para comprobaciones de una línea que ya llevan su texto.
+    const auto expectOk = [&failures](const char* what, bool ok,
+                                      const std::string& detail = std::string()) {
+        if (!ok) ++failures;
+        std::cout << (ok ? "PASS  " : "FAIL  ") << what;
+        if (!detail.empty()) std::cout << "  -- " << detail;
         std::cout << "\n";
     };
 
@@ -1525,6 +1568,90 @@ int selftest() {
     expect("nombre con saltos de linea se limpia",
            proto::sanitizeName(" a\nb\tc "), "abc");
 
+    // ── Apagado: el hilo lector tiene que despertarse ──────────────
+    //
+    // Esta es la causa del "Ctrl+C se queda colgado". El hilo de cada conexión
+    // espera en select() sobre su socket. Cerrar ese socket desde otro hilo NO
+    // despierta al select(), así que con la espera larga el proceso se quedaba
+    // vivo hasta que la espera caducaba sola (con las conexiones HTTP del
+    // navegador, hasta 15 s). Aquí se mide lo mismo: con el socket cerrado desde
+    // fuera, ¿el lector sale por sí mismo en un tiempo razonable?
+    {
+        // Puerto de la conexión real, para poder hablarle de verdad en vez de
+        // simularlo. No se usa listener: se abre el socket de escucha aquí
+        // directamente para poder pedir un puerto efímero.
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = 0;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+        const net::socket_t probe = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (probe == net::kInvalidSocket ||
+            ::bind(probe, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
+            ::listen(probe, 4) != 0) {
+            if (probe != net::kInvalidSocket) net::closeSocket(probe);
+            expectOk("apagado: se abre un socket de prueba", false,
+                     "socket() error " + std::to_string(net::lastError()));
+        } else {
+            socklen_t addrLen = sizeof(addr);
+            if (::getsockname(probe, reinterpret_cast<sockaddr*>(&addr), &addrLen) != 0) {
+                net::closeSocket(probe);
+                expectOk("apagado: se obtiene el puerto de prueba", false);
+            } else {
+                // Un par conectado y silencioso, como un jugador quieto: el hilo
+                // que acepta se queda abierto un momento y luego cierra su lado.
+                std::thread partner([probe] {
+                    const net::socket_t peer = net::acceptTcp(probe);
+                    if (peer != net::kInvalidSocket) {
+                        net::setNonBlocking(peer, true);
+                        std::this_thread::sleep_for(std::chrono::seconds(4));
+                        net::closeSocket(peer);
+                    }
+                });
+
+                net::socket_t sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+                net::setNonBlocking(sock, true);
+                // No bloquea por ser no bloqueante: basta con esperar a que
+                // select() diga que la conexión está hecha.
+                ::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+                net::waitWritable(sock, 2000);
+
+                WebSocket ws;
+                ws.adopt(sock);
+                ws.setReadSlices(200, 0);   // un solo tramo, sin límite total
+
+                // Igual que el hilo de conexión real: la espera se agota cada
+                // 200 ms, el bucle comprueba la bandera de parada y sale. No
+                // depende de que cerrar el socket despierte al select(), que en
+                // Windows no es fiable: la bandera es lo que garantiza el
+                // apagado.
+                std::atomic<bool> stop{false};
+                std::thread reader([&ws, &stop] {
+                    while (!stop.load()) {
+                        std::string text;
+                        if (!ws.recvText(text)) {
+                            if (ws.lastReadTimedOut()) continue;
+                            break;
+                        }
+                    }
+                });
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                const int64_t started = nowMs();
+                stop.store(true);   // el "Ctrl+C": el servidor se está parando
+                reader.join();
+                const int64_t elapsed = nowMs() - started;
+                partner.join();
+                net::closeSocket(probe);
+
+                // Sin la espera troceada esto tardaría un slice entero (o el
+                // timeout del navegador, 15 s) en vez de salir al momento.
+                expectOk("apagado: el hilo lector se suelta al ver la parada",
+                         elapsed < 400, std::to_string(elapsed) + " ms");
+            }
+        }
+    }
+
     std::cout << (failures == 0 ? "\nselftest: todo correcto\n"
                                 : "\nselftest: " + std::to_string(failures) +
                                       " fallo(s)\n");
@@ -1540,7 +1667,17 @@ int main(int argc, char** argv) {
     setHighResolutionTimer(true);
     installSignalHandlers();
 
-    if (argc > 1 && std::string(argv[1]) == "--selftest") return selftest();
+    // El selftest también abre sockets, así que la red tiene que estar en marcha
+    // antes de correrlo.
+    if (argc > 1 && std::string(argv[1]) == "--selftest") {
+        if (!net::startup()) {
+            std::cerr << "No se pudo inicializar la libreria de red.\n";
+            return 1;
+        }
+        const int result = selftest();
+        net::shutdown();
+        return result;
+    }
 
     uint16_t port = 8080;
     Difficulty difficulty = Difficulty::Hard;

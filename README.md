@@ -341,6 +341,24 @@ espera a un `RESTART` o a un `ROOM_START` del anfitrión.
 
 ---
 
+### Parar y volver a arrancar
+
+`Ctrl+C` para el servidor y el puerto queda libre enseguida, para poder
+relanzarlo sin esperar. El motivo por el que antes no pasaba, y que conviene no
+repetir: los hilos de conexión esperaban **una sola vez** y muy rato. Cerrar un
+socket desde otro hilo no despierta de forma fiable a un `select()` que ya está
+esperando en él, así que el proceso seguía vivo hasta que esa espera caducaba
+—hasta 15 s si el navegador tenía conexiones HTTP abiertas.
+
+Ahora cada hilo **espera troceado** (200 ms), así que comprueba la bandera de
+parada varias veces por segundo y sale en cuanto la ve. `Ctrl+C` cierra en
+milisegundos y el siguiente arranque encuentra el puerto limpio.
+
+Si alguna vez el servidor no terminara del todo, avisa: debería imprimir
+`Servidor detenido. (N conexión(es) sin cerrar todavía)`.
+
+---
+
 ## Detalles que hacen que se juegue bien online
 
 Son las razones de cada decisión rara del código. Si algo parece absurdo, suele
@@ -449,7 +467,12 @@ Estado actual, medido sobre esta build (MSVC, Windows, `easy`, 1 ronda):
 | `browser-test.mjs` | **26/26** |
 | `input-test.mjs` | **19/19** |
 | `camera-test.mjs` | **4/4** |
-| `server.exe --selftest` | **8/8** |
+| `server.exe --selftest` | **9/9** |
+
+`--selftest` incluye una comprobación del apagado: mide en milisegundos que el
+hilo lector se suelta al ver la bandera de parada. Es la única forma fiable de
+verificarlo en Windows, donde un script no consigue entregar el evento de
+consola ni a un programa mínimo.
 
 El smoke test tiene dos fases muy distintas en duración: la de salas y protocolo
 tarda unos segundos, y la de **ciclo de partida** puede tardar minutos porque las
@@ -491,6 +514,14 @@ node tools/smoke-test.mjs 8083
 - **El motor está protegido por un mutex por sala** y las secciones críticas son
   mínimas. `lobbyMutex_` nunca se mantiene mientras se toma el motor, así que no
   hay un orden de bloqueos que recordar.
-- Las conexiones HTTP de tipo keep-alive se cierran tras 15 s de inactividad;
-  un WebSocket ya establecido no tiene timeout de lectura.
+- **El Ctrl+C no se queda colgado** porque los hilos lectores **esperan troceados**
+  (200 ms) en vez de una sola espera larga. Cerrar un socket desde otro hilo
+  *no* despierta de forma fiable a un `select()` que ya está esperando en él
+  (en Windows es comportamiento indefinido), así que con la espera larga el
+  proceso se quedaba vivo hasta que la espera caducaba sola: hasta 15 s si el
+  navegador tenía conexiones HTTP keep-alive abiertas. Con los trozos, cada
+  vuelta del bucle comprueba la bandera de parada y el hilo sale solo.
+  `--selftest` lo mide en milisegundos, porque en Windows no se puede reproducir
+  a mano: ni siquiera un programa mínimo con `signal(SIGINT)` recibe el evento
+  de consola desde un script.
 - La pelota avanza en subpasos para que no atraviese un muro a alta velocidad.

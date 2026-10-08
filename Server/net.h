@@ -72,6 +72,24 @@ inline void shutdown() {
 #endif
 }
 
+/**
+ * Desconecta el socket en ambos sentidos SIN liberar el mango.
+ *
+ * Esto es lo que despierta a un hilo que está bloqueado en recv() o select().
+ * En Windows, cerrar el socket desde otro hilo mientras otro está esperando en
+ * él es comportamiento indefinido: a veces devuelve y a veces se queda
+ * colgado para siempre. shutdown() sí está pensado exactamente para esto, y por
+ * eso el servidor lo llama antes de cerrar.
+ */
+inline void shutdownBoth(socket_t s) {
+    if (s == kInvalidSocket) return;
+#ifdef _WIN32
+    ::shutdown(s, SD_BOTH);
+#else
+    ::shutdown(s, SHUT_RDWR);
+#endif
+}
+
 inline void closeSocket(socket_t s) {
     if (s == kInvalidSocket) return;
 #ifdef _WIN32
@@ -79,6 +97,13 @@ inline void closeSocket(socket_t s) {
 #else
     ::close(s);
 #endif
+}
+
+/** Desconecta y cierra: la forma correcta de soltar una conexión. */
+inline void closeSocketAndWake(socket_t s) {
+    if (s == kInvalidSocket) return;
+    shutdownBoth(s);
+    closeSocket(s);
 }
 
 // ─── Errors ────────────────────────────────────────────────────────
