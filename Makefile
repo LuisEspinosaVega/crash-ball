@@ -19,7 +19,7 @@ else
     START_WEB  := xdg-open
 endif
 
-.PHONY: all configure build run test browser-test clean rebuild help
+.PHONY: all configure build run test rooms-test browser-test selftest clean rebuild help
 
 all: build
 
@@ -27,6 +27,8 @@ help:
 	@echo "make build         Configure (if needed) and compile the server"
 	@echo "make run           Build, then run the server on PORT=$(PORT) ($(DIFFICULTY))"
 	@echo "make test          Build, then run the protocol smoke test"
+	@echo "make rooms-test    Run only the room/lobby checks (fast)"
+	@echo "make selftest      Check handshake hash, room codes, name sanitising"
 	@echo "make browser-test  Build, then load the game in headless Chrome"
 	@echo "make rebuild       Wipe the build directory and build from scratch"
 	@echo "make clean         Remove the build directory"
@@ -43,10 +45,21 @@ run: build
 	@echo "Abriendo http://localhost:$(PORT)/ — Ctrl+C para detener."
 	@$(SERVER_BIN) $(PORT) $(DIFFICULTY)
 
+selftest: build
+	@$(SERVER_BIN) --selftest
+
 test: build
 	@$(SERVER_BIN) $(PORT) $(DIFFICULTY) & \
 	 sleep 2; \
 	 node tools/smoke-test.mjs $(PORT); \
+	 status=$$?; \
+	 kill %1 2>/dev/null; \
+	 exit $$status
+
+rooms-test: build
+	@$(SERVER_BIN) $(PORT) $(DIFFICULTY) & \
+	 sleep 2; \
+	 node tools/smoke-test.mjs $(PORT) --rooms; \
 	 status=$$?; \
 	 kill %1 2>/dev/null; \
 	 exit $$status

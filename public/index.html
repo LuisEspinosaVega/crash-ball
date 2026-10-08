@@ -2,94 +2,299 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="color-scheme" content="dark">
+    <meta name="description" content="Crash Ball Arena: juego arcade multijugador en el navegador. Crea una sala y comparte el código.">
     <title>Crash Ball Arena</title>
     <link rel="icon" type="image/png" href="favicon.png">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <!-- El renderer de Three.js inserta aquí su <canvas>. -->
-    <div id="stage"></div>
+    <!-- El renderer de Three.js inserta aquí su <canvas>. Va detrás de todo y
+         solo se ve cuando hay partida: en menú y lobby quedadifuminado. -->
+    <div id="stage" class="is-idle"></div>
 
-    <!-- Overlay de carga: visible hasta que el WebSocket se abre. -->
-    <div id="loading">
-        <div class="loading-spinner"></div>
-        <p class="loading-text" id="loading-text">Conectando al servidor…</p>
+    <!-- ══════════════════ MENÚ PRINCIPAL ══════════════════ -->
+    <div id="screen-menu" class="screen">
+        <div class="panel menu-panel">
+            <header class="brand">
+                <h1>CRASH<span>BALL</span></h1>
+                <p class="tagline">Arena arcade para 1&ndash;4 jugadores</p>
+            </header>
+
+            <label class="field">
+                <span class="field-label">Tu nombre</span>
+                <input id="input-name" type="text" maxlength="16" autocomplete="nickname"
+                       placeholder="Jugador" spellcheck="false">
+            </label>
+
+            <div class="actions">
+                <button id="btn-quick" class="btn btn-primary" type="button">
+                    Jugar r&aacute;pido
+                    <small>Partida abierta, los huecos los llevan bots</small>
+                </button>
+                <button id="btn-create" class="btn" type="button">
+                    Crear sala
+                    <small>Elige las reglas y comparte el c&oacute;digo</small>
+                </button>
+                <button id="btn-open-code" class="btn" type="button">
+                    Unirse con c&oacute;digo
+                    <small>5 letras para entrar en la sala de alguien</small>
+                </button>
+            </div>
+
+            <!-- Formulario de creación -->
+            <section id="panel-create" class="subpanel hidden" aria-label="Crear sala">
+                <label class="field">
+                    <span class="field-label">Nombre de la sala</span>
+                    <input id="input-room-title" type="text" maxlength="16"
+                           placeholder="Sala de Ana" spellcheck="false">
+                </label>
+                <div class="field-row">
+                    <label class="field">
+                        <span class="field-label">Rondas</span>
+                        <select id="select-rounds">
+                            <option value="1">1 &mdash; a la primera</option>
+                            <option value="3" selected>3 &mdash; est&aacute;ndar</option>
+                            <option value="5">5 &mdash; larga</option>
+                            <option value="7">7 &mdash; muy larga</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span class="field-label">Plazas</span>
+                        <select id="select-slots">
+                            <option value="1">1 &mdash; solo contra bots</option>
+                            <option value="2">2 &mdash; duelo</option>
+                            <option value="4" selected>4 &mdash; todos</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span class="field-label">Dificultad de los bots</span>
+                        <select id="select-difficulty">
+                            <option value="easy">F&aacute;cil</option>
+                            <option value="medium">Media</option>
+                            <option value="hard" selected>Dif&iacute;cil</option>
+                            <option value="expert">Experto</option>
+                        </select>
+                    </label>
+                </div>
+                <button id="btn-create-go" class="btn btn-primary" type="button">Crear y esperar</button>
+            </section>
+
+            <!-- Entrada por código -->
+            <section id="panel-code" class="subpanel hidden" aria-label="Unirse con código">
+                <label class="field field-code">
+                    <span class="field-label">C&oacute;digo de la sala</span>
+                    <input id="input-code" type="text" maxlength="5" autocomplete="off"
+                           autocapitalize="characters" spellcheck="false"
+                           placeholder="ABCDE" inputmode="latin">
+                </label>
+                <button id="btn-code-go" class="btn btn-primary" type="button">Entrar</button>
+            </section>
+
+            <!-- Salas abiertas -->
+            <section class="rooms" aria-label="Salas abiertas">
+                <div class="rooms-head">
+                    <h2>Salas abiertas</h2>
+                    <button id="btn-refresh-rooms" class="btn btn-ghost btn-small" type="button">Actualizar</button>
+                </div>
+                <ul id="room-list" class="room-list">
+                    <li class="room-empty">Buscando salas&hellip;</li>
+                </ul>
+            </section>
+
+            <details class="howto">
+                <summary>Reglas y controles</summary>
+                <div class="howto-body">
+                    <p>Cada jugador defiende un muro. Mueve la pala para devolver la pelota;
+                       si te pasa, pierdes un punto de vida. Gana la ronda el &uacute;ltimo en pie
+                       y la partida el primero en alcanzar las rondas elegidas. Los muros
+                       libres los defienden bots.</p>
+                    <table class="keys">
+                        <tr><td><kbd>&larr;</kbd> <kbd>&rarr;</kbd> / <kbd>A</kbd> <kbd>D</kbd></td><td>Deslizar la pala</td></tr>
+                        <tr><td><kbd>Espacio</kbd></td><td>Dash: pala larga y golpe fuerte</td></tr>
+                        <tr><td><kbd>T</kbd></td><td>Chat</td></tr>
+                        <tr><td><kbd>Esc</kbd></td><td>Men&uacute; de la partida</td></tr>
+                    </table>
+                </div>
+            </details>
+
+            <footer class="menu-foot">
+                <span id="conn-indicator" class="conn conn-bad">Sin conexi&oacute;n</span>
+                <span id="conn-ping" class="conn-ping hidden"></span>
+            </footer>
+        </div>
     </div>
 
-    <!-- Aviso de conexión perdida (se muestra mientras se reintenta). -->
-    <div id="connection-lost" class="hidden">
-        <strong>Conexión perdida.</strong>
-        <span id="connection-lost-detail">Reintentando cada 3 s…</span>
+    <!-- ══════════════════ VESTÍBULO (LOBBY) ══════════════════ -->
+    <div id="screen-lobby" class="screen hidden">
+        <div class="panel lobby-panel">
+            <header class="lobby-head">
+                <div>
+                    <h2 id="lobby-title">Sala</h2>
+                    <p id="lobby-rules" class="lobby-rules">—</p>
+                </div>
+                <div class="code-box">
+                    <span class="field-label">C&oacute;digo</span>
+                    <button id="lobby-code" class="code" type="button"
+                            title="Copiar c&oacute;digo">-----</button>
+                    <span id="lobby-code-hint" class="code-hint">toca para copiar</span>
+                </div>
+            </header>
+
+            <ul id="lobby-players" class="player-list"></ul>
+            <p id="lobby-note" class="lobby-note hidden"></p>
+
+            <div id="lobby-settings" class="subpanel hidden">
+                <div class="field-row">
+                    <label class="field">
+                        <span class="field-label">Rondas</span>
+                        <select id="lobby-rounds">
+                            <option value="1">1</option><option value="3">3</option>
+                            <option value="5">5</option><option value="7">7</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span class="field-label">Plazas</span>
+                        <select id="lobby-slots">
+                            <option value="1">1</option><option value="2">2</option>
+                            <option value="4">4</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span class="field-label">Dificultad</span>
+                        <select id="lobby-difficulty">
+                            <option value="easy">F&aacute;cil</option>
+                            <option value="medium">Media</option>
+                            <option value="hard">Dif&iacute;cil</option>
+                            <option value="expert">Experto</option>
+                        </select>
+                    </label>
+                </div>
+            </div>
+
+            <div class="lobby-actions">
+                <button id="btn-ready" class="btn" type="button">Marcarme listo</button>
+                <button id="btn-start" class="btn btn-primary hidden" type="button">Iniciar partida</button>
+                <button id="btn-back-lobby" class="btn hidden" type="button">Volver al vest&iacute;bulo</button>
+                <button id="btn-leave-room" class="btn btn-ghost" type="button">Salir de la sala</button>
+            </div>
+        </div>
     </div>
 
-    <!-- Cuenta atrás de inicio de ronda. -->
-    <div id="countdown" class="hidden">3</div>
-
-    <!-- HUD principal. -->
+    <!-- ══════════════════ HUD DE PARTIDA ══════════════════ -->
     <div id="ui" class="hidden">
         <div id="hud">
-            <div class="stat" id="round-number">Ronda 1</div>
+            <div class="stat" id="round-number">Ronda —</div>
             <div class="stat" id="round-time">00:00</div>
-            <div class="stat" id="round-goal">Primero a 3</div>
+            <div class="stat" id="round-goal"></div>
             <div class="stat" id="seat-label">Tú: —</div>
+            <div class="stat stat-quiet" id="room-chip">Sala —</div>
+            <div class="stat stat-quiet" id="ping-chip">— ms</div>
         </div>
 
-        <!-- Una fila por asiento; el color de cada una se inyecta desde game.js. -->
+        <!-- Una fila por asiento; el color de cada una se inyecta desde arena.js -->
         <div id="health-bars">
             <div class="health-row" id="hb-0">
-                <span class="health-name" id="hb-0-name">Jugador 1</span>
+                <span class="health-name" id="hb-0-name">Asiento 1</span>
                 <span class="health-track"><span class="health-fill" id="hb-0-fill"></span></span>
-                <span class="health-hp" id="hb-0-hp">15/15</span>
+                <span class="health-hp" id="hb-0-hp">—</span>
             </div>
             <div class="health-row" id="hb-1">
-                <span class="health-name" id="hb-1-name">Jugador 2</span>
+                <span class="health-name" id="hb-1-name">Asiento 2</span>
                 <span class="health-track"><span class="health-fill" id="hb-1-fill"></span></span>
-                <span class="health-hp" id="hb-1-hp">15/15</span>
+                <span class="health-hp" id="hb-1-hp">—</span>
             </div>
             <div class="health-row" id="hb-2">
-                <span class="health-name" id="hb-2-name">Jugador 3</span>
+                <span class="health-name" id="hb-2-name">Asiento 3</span>
                 <span class="health-track"><span class="health-fill" id="hb-2-fill"></span></span>
-                <span class="health-hp" id="hb-2-hp">15/15</span>
+                <span class="health-hp" id="hb-2-hp">—</span>
             </div>
             <div class="health-row" id="hb-3">
-                <span class="health-name" id="hb-3-name">Jugador 4</span>
+                <span class="health-name" id="hb-3-name">Asiento 4</span>
                 <span class="health-track"><span class="health-fill" id="hb-3-fill"></span></span>
-                <span class="health-hp" id="hb-3-hp">15/15</span>
+                <span class="health-hp" id="hb-3-hp">—</span>
             </div>
         </div>
 
-        <!-- Indicador de dash del jugador local (estimación local, ver game.js). -->
+        <!-- Indicador de dash del jugador local -->
         <div id="dash-indicator" class="is-ready">
             <span class="dash-label" id="dash-label">DASH LISTO</span>
             <span class="dash-track"><span class="dash-fill" id="dash-fill"></span></span>
         </div>
 
         <div id="controls">
-            <p>← → o A/D: mover &nbsp;·&nbsp; ESPACIO / ENTER: dash &nbsp;·&nbsp; R: reiniciar partida</p>
+            <p>&larr; &rarr; o A/D: mover &nbsp;·&nbsp; ESPACIO: dash &nbsp;·&nbsp; T: chat &nbsp;·&nbsp; ESC: men&uacute;</p>
+        </div>
+
+        <!-- Controles táctiles (solo en pantallas táctiles) -->
+        <div id="touch-controls" class="hidden">
+            <button id="touch-left" class="touch-btn" type="button" aria-label="Izquierda">&larr;</button>
+            <button id="touch-dash" class="touch-btn touch-dash" type="button" aria-label="Dash">DASH</button>
+            <button id="touch-right" class="touch-btn" type="button" aria-label="Derecha">&rarr;</button>
         </div>
     </div>
 
-    <!-- Fin de ronda. -->
-    <div id="overlay-round" class="overlay hidden">
-        <div class="overlay-panel">
-            <h1 id="overlay-round-title">Ronda terminada</h1>
-            <p id="overlay-round-text"></p>
+    <!-- Cuenta atrás / resultado de ronda -->
+    <div id="countdown" class="hidden">3</div>
+
+    <!-- ══════════════════ CHAT ══════════════════ -->
+    <div id="chat" class="chat hidden">
+        <ul id="chat-log" class="chat-log" aria-live="polite"></ul>
+        <form id="chat-form" class="chat-form">
+            <input id="chat-input" type="text" maxlength="140" autocomplete="off"
+                   placeholder="Escribe y pulsa Intro">
+            <button class="btn btn-small" type="submit">Enviar</button>
+        </form>
+    </div>
+    <button id="chat-toggle" class="chat-toggle hidden" type="button" title="Chat (T)">Chat</button>
+
+    <!-- ══════════════════ MENÚ DE PARTIDA (Esc) ══════════════════ -->
+    <div id="overlay-pause" class="overlay overlay-soft hidden">
+        <div class="overlay-panel overlay-panel-narrow">
+            <h1>Pausa</h1>
+            <p id="pause-note" class="pause-note">—</p>
+            <div class="overlay-actions">
+                <button id="btn-resume" class="btn btn-primary" type="button">Reanudar</button>
+                <button id="btn-to-lobby" class="btn hidden" type="button">Volver al vest&iacute;bulo</button>
+                <button id="btn-quit" class="btn btn-ghost" type="button">Salir al men&uacute;</button>
+            </div>
         </div>
     </div>
 
-    <!-- Fin de partida. -->
+    <!-- Fin de partida -->
     <div id="overlay-match" class="overlay hidden">
         <div class="overlay-panel">
             <h1 id="overlay-match-title">Partida terminada</h1>
             <p id="overlay-match-text"></p>
-            <button id="btn-restart" type="button">Reiniciar partida</button>
+            <div class="overlay-actions">
+                <button id="btn-restart" class="btn btn-primary" type="button">Revancha</button>
+                <button id="btn-match-menu" class="btn btn-ghost" type="button">Men&uacute;</button>
+            </div>
         </div>
+    </div>
+
+    <!-- Avisos flotantes -->
+    <div id="toasts" class="toasts" aria-live="polite"></div>
+
+    <!-- Pantalla de carga: solo mientras se abre el WebSocket -->
+    <div id="loading" class="hidden">
+        <div class="loading-spinner"></div>
+        <p class="loading-text" id="loading-text">Conectando con el servidor&hellip;</p>
+    </div>
+
+    <!-- Aviso de conexión perdida -->
+    <div id="connection-lost" class="hidden">
+        <strong>Conexi&oacute;n perdida.</strong>
+        <span id="connection-lost-detail">Reintentando&hellip;</span>
     </div>
 
     <!-- Three.js r128 vendorizado: sin CDN ni peticiones externas. -->
     <script src="vendor/three.min.js"></script>
-    <script src="game.js"></script>
+    <script src="js/ui.js"></script>
+    <script src="js/net.js"></script>
+    <script src="js/menu.js"></script>
+    <script src="js/arena.js"></script>
+    <script src="js/main.js"></script>
 </body>
 </html>

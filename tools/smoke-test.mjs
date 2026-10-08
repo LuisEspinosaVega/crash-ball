@@ -8,8 +8,12 @@
 // Sec-WebSocket-Accept, so a successful connect proves SHA-1 + base64) and the
 // JSON game protocol. It also proves the simulation actually advances.
 
-const PORT = process.argv[2] ? Number(process.argv[2]) : 8080;
-const HOST = process.argv[3] || '127.0.0.1';
+// First non-flag argument is the port, the second is the host. Flags may come
+// anywhere: `smoke-test.mjs --rooms 8080` and `smoke-test.mjs 8080 --rooms`
+// both work, which matters when you are iterating on one suite.
+const positional = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+const PORT = positional[0] ? Number(positional[0]) : 8080;
+const HOST = positional[1] || '127.0.0.1';
 const HTTP_BASE = `http://${HOST}:${PORT}`;
 const WS_URL = `ws://${HOST}:${PORT}`;
 
@@ -81,7 +85,8 @@ async function testHttp() {
         check('GET / returns 200', false, String(err));
     }
 
-    for (const asset of ['/game.js', '/styles.css', '/vendor/three.min.js', '/favicon.png']) {
+    for (const asset of ['/js/ui.js', '/js/net.js', '/js/menu.js', '/js/arena.js',
+                         '/js/main.js', '/styles.css', '/vendor/three.min.js', '/favicon.png']) {
         try {
             const res = await httpGet(asset);
             check(`GET ${asset}`, res.status === 200 && res.body.length > 0,
@@ -121,6 +126,244 @@ async function testHttp() {
     }
 }
 
+// ─── Rooms ─────────────────────────────────────────────────────────
+//
+// The lobby is what turns this from "one match everybody shares" into something
+// you can actually play online: create a room, share the code, the host starts
+// when everyone is in. These checks drive that flow end to end.
+
+const CODE_PATTERN = /^[A-Z2-9]{5}$/;   // the server's alphabet
+
+function openRawClient() {
+    return new Promise((resolve, reject) => {
+        const ws = new WebSocket(WS_URL);
+        const client = { ws, messages: [], rooms: null, states: [], errors: [], seat: -1,
+                         chat: [], sessionId: '' };
+
+        const timer = setTimeout(() => reject(new Error('no HELLO')), 8000);
+
+        ws.onerror = () => {
+            clearTimeout(timer);
+            reject(new Error('socket error'));
+        };
+
+        ws.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+            client.messages.push(msg.type);
+            if (msg.type === 'HELLO') {
+                client.sessionId = msg.sessionId;
+                clearTimeout(timer);
+                resolve(client);
+            } else if (msg.type === 'ROOM') {
+                client.room = msg;
+            } else if (msg.type === 'ROOMS') {
+                client.rooms = msg;
+            } else if (msg.type === 'STATE') {
+                client.states.push(msg);
+            } else if (msg.type === 'ERROR' || msg.type === 'REJECT') {
+                client.errors.push(msg);
+            } else if (msg.type === 'CHAT') {
+                client.chat.push(msg);
+            } else if (msg.type === 'SEATED') {
+                client.seat = msg.seat;
+            }
+        };
+
+        ws.onopen = () => {};
+    });
+}
+
+// Espera a que un predicado sobre el estado local devuelva algo truthy.
+// (La función waitFor() de la sección de ciclo de vida tiene otra firma.)
+const until = (predicate, budgetMs, stepMs = 120) => new Promise((resolve, reject) => {
+    const deadline = Date.now() + budgetMs;
+    (async () => {
+        while (Date.now() < deadline) {
+            const value = predicate();
+            if (value) return resolve(value);
+            await sleep(stepMs);
+        }
+        return reject(new Error('timeout'));
+    })();
+});
+
+async function testRooms() {
+    const host = await openRawClient();
+    const guest = await openRawClient();
+
+    // ── Crear ──
+    host.ws.send(JSON.stringify({
+        type: 'ROOM_CREATE', name: 'Anfitrion', title: 'Sala de prueba',
+        roundsToWin: 3, difficulty: 'medium', humanSlots: 2
+    }));
+
+    let room = null;
+    try {
+        room = await until(() => host.room, 8000);
+    } catch (err) {
+        check('ROOM_CREATE returns the room', false, String(err));
+        host.ws.close(); guest.ws.close();
+        return;
+    }
+
+    check('ROOM_CREATE returns the room', true, `código ${room.code}`);
+    check('the room code is 5 unambiguous letters', CODE_PATTERN.test(room.code), room.code);
+    check('the creator is the host', room.isHost === true && room.hostId >= 0);
+    check('a new room waits in the lobby', room.phase === 'lobby');
+    check('the room carries its settings',
+          room.config && room.config.roundsToWin === 3 &&
+          room.config.difficulty === 'medium' && room.config.humanSlots === 2,
+          JSON.stringify(room.config));
+    check('the roster starts with one player',
+          Array.isArray(room.players) && room.players.length === 1 &&
+          room.players[0].name === 'Anfitrion');
+
+    // ── Unirse por código ──
+    guest.ws.send(JSON.stringify({ type: 'ROOM_JOIN', code: room.code, name: 'Invitado' }));
+    let guestRoom = null;
+    try {
+        guestRoom = await until(() => guest.room, 8000);
+    } catch (err) {
+        // Say what actually arrived: "timeout" alone hid a real bug for a while.
+        const seen = guest.messages.join(',');
+        const why = guest.errors.map((e) => e.code + ':' + e.message).join(' | ');
+        check('ROOM_JOIN by code works', false,
+              `${String(err)} · recibidos [${seen}] · errores [${why}]`);
+        host.ws.close(); guest.ws.close();
+        return;
+    }
+    check('ROOM_JOIN by code works', true, `${guestRoom.players.length} jugadores`);
+    check('the guest is not the host', guestRoom.isHost === false);
+    check('both players see each other',
+          guestRoom.players.length === 2 &&
+          guestRoom.players.every((p) => p.name === 'Anfitrion' || p.name === 'Invitado'),
+          guestRoom.players.map((p) => p.name).join(', '));
+
+    // El anfitrión recibe la actualización del vestíbulo.
+    const hostSeesTwo = await until(() => host.room.players.length === 2, 8000).catch(() => null);
+    check('the host is told about the new arrival', !!hostSeesTwo);
+
+    // ── El salón no empieza solo ──
+    await sleep(500);
+    check('the lobby does not start by itself',
+          host.room.phase === 'lobby' && host.states.length === 0);
+
+    // ── Solo el anfitrión inicia ──
+    guest.ws.send(JSON.stringify({ type: 'ROOM_START' }));
+    await sleep(400);
+    check('a non-host cannot start the match',
+          guest.room.phase === 'lobby' &&
+          guest.errors.some((e) => e.code === 'NOT_HOST'),
+          guest.errors.map((e) => e.code).join(',') || `phase ${guest.room.phase}`);
+
+    // ── Inicio del anfitrión ──
+    host.ws.send(JSON.stringify({ type: 'ROOM_START' }));
+
+    let seated = null;
+    try {
+        seated = await until(() => host.states.length > 3 ? host : null, 8000);
+    } catch (err) {
+        seated = null;
+    }
+    check('the host can start the match', !!seated);
+    if (seated) {
+        const phase = host.room.phase;
+        check('the room is now playing', phase === 'playing', `phase ${phase}`);
+
+        const me = host.room.players.find((p) => p.you);
+        const meState = host.states[host.states.length - 1].players.find((p) => p.seat === me.seat);
+        check('the host got a wall', me.seat >= 0 && !!meState && meState.bot === false,
+              `asiento ${me.seat}`);
+        check('free walls are covered by bots',
+              host.states[host.states.length - 1].players.filter((p) => p.bot).length === 2,
+              `${host.states[host.states.length - 1].players.filter((p) => p.bot).length} bots`);
+
+        const guestSeated = await until(() => guest.seat >= 0 ? guest.seat : null, 8000)
+            .catch(() => -1);
+        check('the guest was seated too', guestSeated >= 0 && guestSeated !== me.seat,
+              `anfitrión ${me.seat}, invitado ${guestSeated}`);
+    }
+
+    // ── Chat ──
+    guest.ws.send(JSON.stringify({ type: 'CHAT', text: 'hola' }));
+    const heard = await until(() => host.chat.length > 0 ? host.chat[0] : null, 5000)
+        .catch(() => null);
+    check('chat reaches the other player',
+          !!heard && heard.from === 'Invitado' && heard.text === 'hola',
+          heard ? `${heard.from}: ${heard.text}` : 'no llegó');
+
+    // ── Salir de la sala ──
+    // Leaving does not erase you: the entry stays as "away" and the wall is
+    // held (played by the AI) for the grace window, so coming back is instant.
+    guest.ws.send(JSON.stringify({ type: 'ROOM_LEAVE' }));
+    const after = await until(() => {
+        const view = host.room;
+        return view && view.players.some((p) => p.online === false) ? view : null;
+    }, 8000).catch(() => null);
+    check('leaving keeps the entry but marks the player as away',
+          !!after && after.players.some((p) => p.name === 'Invitado' && p.online === false),
+          after ? after.players.map((p) => `${p.name}:${p.online}`).join(', ') : 'nunca se actualizó');
+
+    // Reconnecting with the same session must hand the wall back. A real browser
+    // keeps its sessionId in localStorage, so the new connection presents the
+    // old one; that is what the server matches on.
+    const back = await openRawClient();
+    back.ws.send(JSON.stringify({
+        type: 'RESUME', code: room.code, sessionId: guest.sessionId
+    }));
+    const resumed = await until(() => back.seat >= 0 ? back : null, 8000).catch(() => null);
+    check('a returning session gets its wall back', !!resumed,
+          resumed ? `asiento ${resumed.seat}` : 'no recuperó el asiento');
+
+    back.ws.close();
+
+    host.ws.close();
+    guest.ws.close();
+}
+
+async function testRoomErrors() {
+    const solo = await openRawClient();
+
+    // Código inexistente.
+    solo.ws.send(JSON.stringify({ type: 'ROOM_JOIN', code: 'ZZZZZ', name: 'Perdido' }));
+    const missing = await until(() => solo.errors[0], 5000).catch(() => null);
+    check('an unknown room code is refused',
+          !!missing && missing.code === 'ROOM_NOT_FOUND',
+          missing ? missing.code : 'sin respuesta');
+
+    // Sala llena.
+    const host = await openRawClient();
+    const a = await openRawClient();
+    const b = await openRawClient();
+
+    host.ws.send(JSON.stringify({ type: 'ROOM_CREATE', name: 'Anfitrion', humanSlots: 2 }));
+    const room = await until(() => host.room, 8000).catch(() => null);
+    check('a 2-slot room can be created', !!room && room.config.humanSlots === 2);
+
+    a.ws.send(JSON.stringify({ type: 'ROOM_JOIN', code: room.code, name: 'Segundo' }));
+    await until(() => a.room, 5000).catch(() => null);
+
+    b.ws.send(JSON.stringify({ type: 'ROOM_JOIN', code: room.code, name: 'Tercero' }));
+    const full = await until(() => b.errors[0], 5000).catch(() => null);
+    check('a full room refuses more players',
+          !!full && full.code === 'ROOM_FULL',
+          full ? `${full.code}: ${full.message}` : `sin respuesta (code enviado: "${room.code}")`);
+
+    // Listado de salas.
+    solo.ws.send(JSON.stringify({ type: 'ROOMS' }));
+    const listing = await until(() => solo.rooms, 5000).catch(() => null);
+    const listed = listing && Array.isArray(listing.rooms)
+        ? listing.rooms.map((r) => r.code)
+        : null;
+    check('the room list answers with the open rooms',
+          !!listing && Array.isArray(listing.rooms) && listed.includes(room.code),
+          listed ? listed.join(', ') : 'sin respuesta');
+
+    for (const c of [solo, host, a, b]) {
+        try { c.ws.close(); } catch { /* closed */ }
+    }
+}
+
 // ─── WebSocket game protocol ───────────────────────────────────────
 
 const WALL_AXIS = { left: 'y', right: 'y', top: 'x', bottom: 'x' };
@@ -156,8 +399,13 @@ function testGame() {
         let welcome = null;
         let opened = false;
         let sawDashing = false;
+        // Closing a socket we finished with still fires onerror/onclose; without
+        // this the suite would report a bogus handshake failure at the end.
+        let settled = false;
 
         const finish = (label, extra = '') => {
+            if (settled) return;
+            settled = true;
             try { ws.close(); } catch { /* already closed */ }
             check(label, false, extra);
             resolve();
@@ -169,7 +417,9 @@ function testGame() {
         }, 10000);
 
         ws.onerror = (err) => {
+            if (settled) return;
             clearTimeout(timeout);
+            settled = true;
             check('WebSocket handshake completes', false,
                   `error: ${err.message || err.type}`);
             resolve();
@@ -280,6 +530,10 @@ function testGame() {
             check('DASH sets the dashing flag', sawDashing);
 
             // ── The match progresses on its own (3 bots are playing) ──
+            // The handshake watchdog is no longer relevant from here: this phase
+            // legitimately takes tens of seconds, and letting it fire would
+            // report a bogus handshake failure.
+            clearTimeout(timeout);
             const hpStart = states[0].msg.players.reduce((a, p) => a + p.hp, 0);
             let progressed = false;
             for (let i = 0; i < 120 && !progressed; i++) {
@@ -295,8 +549,8 @@ function testGame() {
                   `total hp ${hpStart} -> ` +
                   `${states[states.length - 1].msg.players.reduce((a, p) => a + p.hp, 0)}`);
 
-            clearTimeout(timeout);
             ws.close();
+            settled = true;
             resolve();
         })();
     });
@@ -565,11 +819,26 @@ async function testLifecycle() {
     console.log(`Crash Ball smoke test -> ${WS_URL}\n`);
     if (!(await waitForServer())) process.exit(2);
 
+    // --rooms runs only the lobby suites: seconds instead of the minutes the
+    // round/match lifecycle needs, which is what you want while touching rooms.
+    if (process.argv.includes('--rooms')) {
+        await testRooms();
+        console.log('');
+        await testRoomErrors();
+        const failed = results.filter((r) => !r.ok);
+        console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
+        process.exit(failed.length === 0 ? 0 : 1);
+    }
+
     await testHttp();
     console.log('');
     await testGame();
     console.log('');
     await testMultiplayer();
+    console.log('');
+    await testRooms();
+    console.log('');
+    await testRoomErrors();
 
     if (!process.argv.includes('--quick')) {
         console.log('');

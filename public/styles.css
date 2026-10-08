@@ -1,17 +1,29 @@
 /* ============================================================================
- * styles.css — Crash Ball Arena · HUD neón sobre fondo oscuro
+ * styles.css — Crash Ball Arena
+ * ----------------------------------------------------------------------------
+ * Tres capas, en este orden:
+ *   1. base y variables
+ *   2. pantallas de menú y vestíbulo
+ *   3. HUD y overlays de partida
+ *
+ * Sin fuentes ni imágenes externas: el juego tiene que funcionar sin internet
+ * una vez cargado, así que todo es color, sombra y geometría.
  * ==========================================================================*/
 
 :root {
     --bg-dark: #0a0a1a;
-    --bg-panel: rgba(15, 15, 40, 0.88);
+    --bg-panel: rgba(15, 15, 40, 0.9);
+    --bg-panel-solid: #101030;
+    --bg-input: rgba(255, 255, 255, 0.06);
     --accent: #00e5ff;
     --accent2: #ff4081;
     --accent3: #7c4dff;
     --accent4: #00c853;
+    --warn: #ffb300;
     --text: #e6e9f5;
     --text-dim: #8a90ad;
     --border: rgba(100, 100, 140, 0.35);
+    --radius: 12px;
     --font-ui: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     --font-num: ui-monospace, 'Consolas', 'Courier New', monospace;
 }
@@ -40,12 +52,19 @@ body {
     display: none !important;
 }
 
-/* ─── Lienzo WebGL ───────────────────────────────────────────────── */
+/* ═══ 1. Base ═══════════════════════════════════════════════════════ */
 
 #stage {
     position: fixed;
     inset: 0;
     z-index: 0;
+    transition: filter 0.35s ease, opacity 0.35s ease;
+}
+
+/* Fuera de partida el lienzo queda de fondo: da vida sin robar atención. */
+#stage.is-idle {
+    filter: blur(3px) saturate(0.7);
+    opacity: 0.55;
 }
 
 #stage canvas {
@@ -54,87 +73,537 @@ body {
     height: 100%;
 }
 
-/* ─── Pantalla de carga ──────────────────────────────────────────── */
+/* ─── Botones ──────────────────────────────────────────────────── */
 
-#loading {
-    position: fixed;
-    inset: 0;
+.btn {
     display: flex;
     flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    width: 100%;
+    padding: 13px 18px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-align: left;
+    cursor: pointer;
+    transition: transform 0.14s ease, border-color 0.14s ease, background 0.14s ease,
+        box-shadow 0.14s ease;
+}
+
+.btn small {
+    font-size: 11.5px;
+    font-weight: 400;
+    color: var(--text-dim);
+    letter-spacing: 0;
+}
+
+.btn:hover,
+.btn:focus-visible {
+    background: rgba(255, 255, 255, 0.09);
+    border-color: rgba(0, 229, 255, 0.5);
+    transform: translateY(-1px);
+    outline: none;
+}
+
+.btn:active {
+    transform: translateY(1px);
+}
+
+.btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, rgba(0, 229, 255, 0.22), rgba(124, 77, 255, 0.22));
+    border-color: rgba(0, 229, 255, 0.55);
+    color: #eafcff;
+    box-shadow: 0 0 20px rgba(0, 229, 255, 0.18);
+}
+
+.btn-primary:hover,
+.btn-primary:focus-visible {
+    background: linear-gradient(135deg, rgba(0, 229, 255, 0.34), rgba(124, 77, 255, 0.34));
+    box-shadow: 0 0 26px rgba(0, 229, 255, 0.34);
+}
+
+.btn-primary small {
+    color: rgba(234, 252, 255, 0.7);
+}
+
+.btn-ghost {
+    background: transparent;
+    border-color: var(--border);
+    color: var(--text-dim);
+}
+
+.btn-ghost:hover,
+.btn-ghost:focus-visible {
+    color: var(--text);
+    border-color: rgba(255, 64, 129, 0.5);
+}
+
+.btn-small {
+    width: auto;
+    flex-direction: row;
     align-items: center;
-    justify-content: center;
-    gap: 20px;
-    background: radial-gradient(circle at 50% 40%, #141440 0%, var(--bg-dark) 70%);
-    z-index: 1000;
-}
-
-.loading-spinner {
-    width: 54px;
-    height: 54px;
-    border: 4px solid var(--border);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-}
-
-.loading-text {
-    color: var(--accent);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    padding: 7px 14px;
     font-size: 13px;
 }
 
-@keyframes spin {
-    to { transform: rotate(360deg); }
+/* ─── Campos ───────────────────────────────────────────────────── */
+
+.field {
+    display: block;
+    margin-bottom: 12px;
 }
 
-/* ─── Aviso de conexión ──────────────────────────────────────────── */
+.field-label {
+    display: block;
+    margin-bottom: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
 
-#connection-lost {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    /* Por encima de la pantalla de carga: si el primer intento falla, el
-       usuario ve el aviso aunque el overlay de carga siga visible. */
-    z-index: 1100;
-    padding: 16px 26px;
-    text-align: center;
-    background: var(--bg-panel);
-    border: 1px solid var(--accent2);
-    border-radius: 10px;
-    box-shadow: 0 0 28px rgba(255, 64, 129, 0.35);
+input[type='text'],
+select {
+    width: 100%;
+    padding: 11px 13px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--bg-input);
+    color: var(--text);
+    font-family: inherit;
     font-size: 15px;
 }
 
-#connection-lost strong {
-    display: block;
-    color: var(--accent2);
-    margin-bottom: 4px;
+input[type='text'] {
+    user-select: text;
 }
 
-#connection-lost span {
-    color: var(--text-dim);
-    font-size: 13px;
+input[type='text']:focus,
+select:focus {
+    outline: none;
+    border-color: rgba(0, 229, 255, 0.6);
+    box-shadow: 0 0 0 3px rgba(0, 229, 255, 0.12);
 }
 
-/* ─── Cuenta atrás ───────────────────────────────────────────────── */
+input::placeholder {
+    color: rgba(138, 144, 173, 0.7);
+}
 
-#countdown {
+.field-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.field-row .field {
+    flex: 1 1 130px;
+    margin-bottom: 12px;
+}
+
+/* ─── Pantallas (menú / vestíbulo) ─────────────────────────────── */
+
+.screen {
     position: fixed;
-    top: 38%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    z-index: 200;
-    font-family: var(--font-num);
-    font-size: 96px;
-    font-weight: 700;
-    color: var(--accent);
-    text-shadow: 0 0 26px rgba(0, 229, 255, 0.7);
-    pointer-events: none;
+    inset: 0;
+    z-index: 400;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    overflow-y: auto;
+    /* Semi-transparente a propósito: la arena se sigue moviendo detrás del
+       panel, y eso es lo que da sensación de "estoy dentro del juego". */
+    background: radial-gradient(circle at 50% 25%, rgba(14, 14, 55, 0.72), rgba(8, 8, 22, 0.88) 72%);
+    backdrop-filter: blur(3px);
 }
 
-/* ─── Capa de HUD ────────────────────────────────────────────────── */
+.panel {
+    width: min(540px, 100%);
+    padding: 22px 26px 18px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+}
+
+.brand {
+    text-align: center;
+    margin-bottom: 16px;
+}
+
+.brand h1 {
+    font-size: clamp(1.9rem, 5.5vw, 2.6rem);
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    color: var(--accent);
+    text-shadow: 0 0 26px rgba(0, 229, 255, 0.5);
+}
+
+.brand h1 span {
+    color: var(--accent2);
+    text-shadow: 0 0 26px rgba(255, 64, 129, 0.5);
+}
+
+.tagline {
+    margin-top: 4px;
+    font-size: 13px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.actions {
+    display: grid;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.subpanel {
+    margin-bottom: 12px;
+    padding: 14px;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+    background: rgba(0, 0, 0, 0.22);
+}
+
+.field-code input {
+    font-family: var(--font-num);
+    font-size: 26px;
+    letter-spacing: 0.35em;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+/* ─── Listado de salas ─────────────────────────────────────────── */
+
+.rooms {
+    margin-bottom: 14px;
+}
+
+.rooms-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.rooms-head h2 {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.room-list {
+    list-style: none;
+    max-height: 152px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.25);
+}
+
+.room-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.room-row:last-child {
+    border-bottom: none;
+}
+
+.room-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+}
+
+.room-title {
+    font-weight: 600;
+    font-size: 14.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.room-code {
+    font-family: var(--font-num);
+    font-size: 12.5px;
+    letter-spacing: 0.22em;
+    color: var(--accent);
+}
+
+.room-meta {
+    font-size: 11.5px;
+    color: var(--text-dim);
+}
+
+.room-empty {
+    padding: 14px 12px;
+    font-size: 13px;
+    color: var(--text-dim);
+    text-align: center;
+}
+
+/* ─── Cómo se juega ────────────────────────────────────────────── */
+
+.howto {
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+}
+
+.howto summary {
+    cursor: pointer;
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.howto summary:hover {
+    color: var(--accent);
+}
+
+.howto-body {
+    padding-top: 10px;
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--text-dim);
+}
+
+.keys {
+    width: 100%;
+    margin-top: 10px;
+    border-collapse: collapse;
+}
+
+.keys td {
+    padding: 3px 0;
+    vertical-align: top;
+}
+
+.keys td:first-child {
+    width: 45%;
+    white-space: nowrap;
+}
+
+kbd {
+    display: inline-block;
+    padding: 1px 6px;
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.07);
+    font-family: var(--font-num);
+    font-size: 11.5px;
+    color: var(--text);
+}
+
+/* ─── Pie del menú y conexión ──────────────────────────────────── */
+
+.menu-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    font-size: 11.5px;
+}
+
+.conn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.conn::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.conn-good {
+    color: var(--accent4);
+}
+
+.conn-bad {
+    color: var(--accent2);
+}
+
+.conn-ping {
+    font-family: var(--font-num);
+    color: var(--text-dim);
+}
+
+/* ═══ 2. Vestíbulo ════════════════════════════════════════════════ */
+
+.lobby-panel {
+    width: min(600px, 100%);
+}
+
+.lobby-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+    margin-bottom: 16px;
+}
+
+.lobby-head h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+}
+
+.lobby-rules {
+    margin-top: 3px;
+    font-size: 12.5px;
+    color: var(--text-dim);
+}
+
+.code-box {
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.code {
+    display: block;
+    padding: 6px 12px;
+    border: 1px solid rgba(0, 229, 255, 0.5);
+    border-radius: 9px;
+    background: rgba(0, 229, 255, 0.1);
+    color: var(--accent);
+    font-family: var(--font-num);
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: 0.24em;
+    cursor: pointer;
+    text-shadow: 0 0 14px rgba(0, 229, 255, 0.5);
+}
+
+.code:hover {
+    background: rgba(0, 229, 255, 0.18);
+}
+
+.code-hint {
+    display: block;
+    margin-top: 4px;
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+}
+
+.player-list {
+    list-style: none;
+    margin-bottom: 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    background: rgba(0, 0, 0, 0.25);
+}
+
+.player-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 13px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    font-size: 14px;
+}
+
+.player-row:last-child {
+    border-bottom: none;
+}
+
+.player-row.is-you {
+    background: rgba(0, 229, 255, 0.09);
+}
+
+.player-row.is-host .player-name {
+    color: var(--warn);
+}
+
+.player-row.is-away {
+    opacity: 0.5;
+}
+
+.player-row.is-empty {
+    justify-content: center;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+.player-name {
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+}
+
+.player-crown {
+    margin-left: 8px;
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--warn);
+    opacity: 0.85;
+}
+
+.player-status {
+    font-size: 12px;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+.lobby-note {
+    margin-bottom: 12px;
+    padding: 9px 12px;
+    border-left: 3px solid var(--accent3);
+    border-radius: 0 8px 8px 0;
+    background: rgba(124, 77, 255, 0.12);
+    font-size: 12.5px;
+    color: var(--text);
+}
+
+.lobby-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+}
+
+.lobby-actions .btn {
+    width: auto;
+    flex: 1 1 auto;
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
+}
+
+/* ═══ 3. HUD de partida ═══════════════════════════════════════════ */
 
 #ui {
     position: fixed;
@@ -148,10 +617,14 @@ body {
     top: 14px;
     left: 50%;
     transform: translateX(-50%);
+    /* shrink-to-fill de verdad: sin esto el ancho se limita a media pantalla
+       (es left:50%) y las fichas se parten en dos filas. */
+    width: max-content;
+    max-width: calc(100vw - 28px);
     display: flex;
     flex-wrap: wrap;
     justify-content: center;
-    gap: 10px;
+    gap: 8px;
     padding: 8px 14px;
     background: var(--bg-panel);
     border: 1px solid var(--border);
@@ -170,6 +643,19 @@ body {
     white-space: nowrap;
 }
 
+.stat-quiet {
+    color: var(--text-dim);
+    font-weight: 400;
+}
+
+.stat.is-bad {
+    color: var(--accent2);
+}
+
+.stat.is-mid {
+    color: var(--warn);
+}
+
 #round-time {
     font-family: var(--font-num);
     color: var(--accent);
@@ -179,7 +665,11 @@ body {
     color: var(--text-dim);
 }
 
-/* ─── Barras de vida ─────────────────────────────────────────────── */
+#seat-label.is-spectator {
+    color: var(--warn);
+}
+
+/* ─── Barras de vida ──────────────────────────────────────────── */
 
 #health-bars {
     position: absolute;
@@ -197,7 +687,7 @@ body {
 }
 
 .health-row {
-    /* --seat lo inyecta game.js con el color del asiento. */
+    /* --seat lo inyecta arena.js con el color del asiento. */
     --seat: var(--accent);
     display: grid;
     grid-template-columns: 1fr 84px 52px;
@@ -245,9 +735,8 @@ body {
     color: var(--text-dim);
 }
 
-/* Jugador local: fila resaltada. */
 .health-row.is-local {
-    background: rgba(0, 229, 255, 0.10);
+    background: rgba(0, 229, 255, 0.1);
     border-color: rgba(0, 229, 255, 0.55);
 }
 
@@ -255,7 +744,6 @@ body {
     content: ' ▸';
 }
 
-/* Eliminado. */
 .health-row.is-dead .health-name,
 .health-row.is-dead .health-hp {
     color: #5c6180;
@@ -266,7 +754,6 @@ body {
     opacity: 0.5;
 }
 
-/* Asiento sin jugador conectado. */
 .health-row.is-empty {
     opacity: 0.45;
 }
@@ -276,7 +763,7 @@ body {
     font-style: italic;
 }
 
-/* ─── Indicador de dash ──────────────────────────────────────────── */
+/* ─── Indicador de dash ───────────────────────────────────────── */
 
 #dash-indicator {
     position: absolute;
@@ -327,8 +814,6 @@ body {
     box-shadow: 0 0 8px var(--accent4);
 }
 
-/* ─── Hint de controles ──────────────────────────────────────────── */
-
 #controls {
     position: absolute;
     bottom: 20px;
@@ -344,7 +829,138 @@ body {
     pointer-events: auto;
 }
 
-/* ─── Overlays de fin de ronda / partida ─────────────────────────── */
+/* ─── Controles táctiles ──────────────────────────────────────── */
+
+#touch-controls {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 74px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 22px;
+    pointer-events: none;
+}
+
+.touch-btn {
+    width: 74px;
+    height: 74px;
+    border: 1px solid rgba(0, 229, 255, 0.45);
+    border-radius: 50%;
+    background: rgba(0, 229, 255, 0.14);
+    color: var(--accent);
+    font-size: 26px;
+    font-family: inherit;
+    pointer-events: auto;
+    touch-action: none;
+}
+
+.touch-dash {
+    width: 88px;
+    height: 88px;
+    border-color: rgba(124, 77, 255, 0.55);
+    background: rgba(124, 77, 255, 0.18);
+    color: #d9ccff;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+}
+
+.touch-btn:active {
+    background: rgba(0, 229, 255, 0.32);
+}
+
+/* ─── Cuenta atrás ────────────────────────────────────────────── */
+
+#countdown {
+    position: fixed;
+    top: 38%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 200;
+    font-family: var(--font-num);
+    font-size: 96px;
+    font-weight: 700;
+    color: var(--accent);
+    text-shadow: 0 0 26px rgba(0, 229, 255, 0.7);
+    pointer-events: none;
+}
+
+/* ─── Chat ────────────────────────────────────────────────────── */
+
+.chat {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 300;
+    width: min(320px, calc(100vw - 32px));
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-panel);
+    overflow: hidden;
+}
+
+.chat-log {
+    list-style: none;
+    max-height: 190px;
+    overflow-y: auto;
+    padding: 8px 10px;
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.chat-line {
+    margin-bottom: 3px;
+    word-break: break-word;
+}
+
+.chat-from {
+    font-weight: 700;
+    color: var(--accent);
+    margin-right: 6px;
+}
+
+.chat-text {
+    color: var(--text);
+    /* El texto viene de otros jugadores: nunca se interpreta como HTML. */
+    user-select: text;
+}
+
+.chat-form {
+    display: flex;
+    gap: 6px;
+    padding: 8px;
+    border-top: 1px solid var(--border);
+}
+
+.chat-form input {
+    flex: 1;
+    padding: 8px 10px;
+    font-size: 13px;
+}
+
+.chat-toggle {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 300;
+    padding: 7px 13px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: var(--bg-panel);
+    color: var(--text-dim);
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.chat-toggle:hover {
+    color: var(--accent);
+    border-color: rgba(0, 229, 255, 0.5);
+}
+
+/* ─── Overlays ────────────────────────────────────────────────── */
 
 .overlay {
     position: fixed;
@@ -357,6 +973,10 @@ body {
     backdrop-filter: blur(2px);
 }
 
+.overlay-soft {
+    background: rgba(10, 10, 26, 0.6);
+}
+
 .overlay-panel {
     min-width: min(460px, 88vw);
     padding: 30px 38px;
@@ -365,6 +985,10 @@ body {
     border: 1px solid var(--border);
     border-radius: 14px;
     box-shadow: 0 0 40px rgba(124, 77, 255, 0.35);
+}
+
+.overlay-panel-narrow {
+    min-width: min(360px, 86vw);
 }
 
 .overlay-panel h1 {
@@ -384,65 +1008,172 @@ body {
 }
 
 .overlay-panel p {
-    margin: 14px 0 24px;
+    margin: 14px 0 20px;
     color: var(--text-dim);
     font-size: 1rem;
 }
 
-#overlay-round .overlay-panel p {
-    margin-bottom: 0;
-    color: var(--text);
-    font-size: 1.15rem;
+.pause-note {
+    font-size: 13.5px !important;
 }
 
-/* ─── Botones ────────────────────────────────────────────────────── */
+.overlay-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    justify-content: center;
+}
 
-button {
-    padding: 12px 32px;
-    border: none;
-    border-radius: 8px;
-    background: var(--accent);
-    color: var(--bg-dark);
-    font-family: inherit;
-    font-size: 1rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
+.overlay-actions .btn {
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+}
+
+/* ─── Avisos flotantes ───────────────────────────────────────── */
+
+.toasts {
+    position: fixed;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 900;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    align-items: center;
+    pointer-events: none;
+}
+
+.toast {
+    padding: 9px 18px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: var(--bg-panel-solid);
+    font-size: 13.5px;
+    box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+    animation: toast-in 0.22s ease-out;
+    transition: opacity 0.35s ease, transform 0.35s ease;
+}
+
+.toast.is-out {
+    opacity: 0;
+    transform: translateY(-8px);
+}
+
+.toast-good {
+    border-color: rgba(0, 200, 83, 0.6);
+    color: #b6f5cd;
+}
+
+.toast-bad {
+    border-color: rgba(255, 64, 129, 0.6);
+    color: #ffc4d8;
+}
+
+@keyframes toast-in {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* ─── Carga y conexión perdida ───────────────────────────────── */
+
+#loading {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    background: radial-gradient(circle at 50% 40%, #141440 0%, var(--bg-dark) 70%);
+}
+
+.loading-spinner {
+    width: 54px;
+    height: 54px;
+    border: 4px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+.loading-text {
+    color: var(--accent);
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    cursor: pointer;
-    transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
-    box-shadow: 0 0 18px rgba(0, 229, 255, 0.45);
+    font-size: 13px;
+    text-align: center;
+    padding: 0 20px;
 }
 
-button:hover,
-button:focus-visible {
-    background: #6df0ff;
-    transform: translateY(-1px);
-    box-shadow: 0 0 26px rgba(0, 229, 255, 0.75);
-    outline: none;
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
 }
 
-button:active {
-    transform: translateY(1px);
+#connection-lost {
+    position: fixed;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1100;
+    padding: 12px 22px;
+    text-align: center;
+    background: var(--bg-panel-solid);
+    border: 1px solid var(--accent2);
+    border-radius: 10px;
+    box-shadow: 0 0 28px rgba(255, 64, 129, 0.35);
+    font-size: 14px;
 }
 
-#btn-restart {
-    background: var(--accent2);
-    color: #1a0512;
-    box-shadow: 0 0 18px rgba(255, 64, 129, 0.5);
+#connection-lost strong {
+    display: block;
+    color: var(--accent2);
+    margin-bottom: 3px;
 }
 
-#btn-restart:hover,
-#btn-restart:focus-visible {
-    background: #ff6f9f;
-    box-shadow: 0 0 26px rgba(255, 64, 129, 0.8);
+#connection-lost span {
+    color: var(--text-dim);
+    font-size: 12.5px;
 }
 
-/* ─── Pantallas estrechas ────────────────────────────────────────── */
+/* ─── Pantallas estrechas ─────────────────────────────────────── */
 
-@media (max-width: 720px) {
+@media (max-width: 620px) {
+    .panel {
+        padding: 20px 18px 16px;
+    }
+
+    .lobby-head {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
+    }
+
+    .code-box {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+    }
+
+    .code-hint {
+        margin: 0;
+    }
+
     #health-bars {
         top: auto;
-        bottom: 66px;
+        bottom: 92px;
         left: 12px;
         right: 12px;
         width: auto;
@@ -459,5 +1190,27 @@ button:active {
 
     #controls {
         display: none;
+    }
+
+    .chat {
+        bottom: 8px;
+        right: 8px;
+        width: calc(100vw - 16px);
+    }
+
+    .chat-toggle {
+        bottom: 8px;
+        right: 8px;
+    }
+
+    #hud {
+        top: 8px;
+        padding: 6px 8px;
+        gap: 5px;
+    }
+
+    .stat {
+        padding: 4px 8px;
+        font-size: 11.5px;
     }
 }

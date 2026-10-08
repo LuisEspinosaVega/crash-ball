@@ -179,8 +179,96 @@ try {
     console.log(`Loading ${URL_TO_TEST} in ${chromePath.split(/[\\/]/).pop()}\n`);
     await cdp.send('Page.navigate', { url: URL_TO_TEST });
 
+    // ── Menú ────────────────────────────────────────────────────────
+    // The client no longer joins by itself: it opens on the menu, so the test
+    // has to walk the flow a real player does. Only then do the HUD checks
+    // below mean anything.
+    await sleep(3500);
+
+    const menuProbe = `(function () {
+        const visible = (id) => {
+            const el = document.getElementById(id);
+            if (!el) return false;
+            const s = getComputedStyle(el);
+            return s.display !== 'none' && s.visibility !== 'hidden' && Number(s.opacity) > 0.01;
+        };
+        const txt = (id) => { const el = document.getElementById(id); return el ? el.textContent : null; };
+        return JSON.stringify({
+            menuVisible: visible('screen-menu'),
+            loadingVisible: visible('loading'),
+            gameUiVisible: visible('ui'),
+            quick: !!document.getElementById('btn-quick'),
+            create: !!document.getElementById('btn-create'),
+            code: !!document.getElementById('btn-open-code'),
+            rooms: !!document.getElementById('room-list'),
+            conn: txt('conn-indicator'),
+            stageIdle: (document.getElementById('stage') || {}).className || ''
+        });
+    })()`;
+
+    const menu = JSON.parse((await cdp.send('Runtime.evaluate', {
+        expression: menuProbe, returnByValue: true,
+    })).result.value);
+
+    check('the menu is the first thing you see', menu.menuVisible === true);
+    check('the loading overlay is gone once connected', menu.loadingVisible === false);
+    check('the game HUD stays hidden until a match starts', menu.gameUiVisible === false);
+    check('the menu offers quick play, create and join by code',
+          menu.quick && menu.create && menu.code && menu.rooms);
+    check('the menu reports the connection', /conectad/i.test(String(menu.conn)), `conn="${menu.conn}"`);
+
+    // ── Crear sala ─────────────────────────────────────────────────
+    // Clicks the real button and reads the DOM, so a handler wired to the wrong
+    // element cannot pass unnoticed.
+    await cdp.send('Runtime.evaluate', {
+        expression: `(function () {
+            var name = document.getElementById('input-name');
+            if (name) name.value = 'Navegador';
+            document.getElementById('btn-create').click();
+            document.getElementById('input-room-title').value = 'Sala del test';
+            document.getElementById('btn-create-go').click();
+            return true;
+        })()`,
+    });
+    await sleep(1500);
+
+    const lobbyProbe = `(function () {
+        const visible = (id) => {
+            const el = document.getElementById(id);
+            if (!el) return false;
+            const s = getComputedStyle(el);
+            return s.display !== 'none' && Number(s.opacity) > 0.01;
+        };
+        const txt = (id) => { const el = document.getElementById(id); return el ? el.textContent : null; };
+        return JSON.stringify({
+            lobbyVisible: visible('screen-lobby'),
+            code: txt('lobby-code'),
+            players: Array.prototype.map.call(
+                document.querySelectorAll('#lobby-players .player-name'),
+                function (n) { return n.textContent; }),
+            startVisible: visible('btn-start'),
+            rules: txt('lobby-rules')
+        });
+    })()`;
+
+    const lobby = JSON.parse((await cdp.send('Runtime.evaluate', {
+        expression: lobbyProbe, returnByValue: true,
+    })).result.value);
+
+    check('creating a room opens the lobby', lobby.lobbyVisible === true);
+    check('the lobby shows a 5-letter share code',
+          /^[A-Z2-9]{5}$/.test(String(lobby.code || '').trim()), `code="${lobby.code}"`);
+    check('the lobby lists the creator', (lobby.players || []).length === 1,
+          (lobby.players || []).join(', '));
+    check('the host gets the start button', lobby.startVisible === true);
+
+    // ── Iniciar partida ────────────────────────────────────────────
+    await cdp.send('Runtime.evaluate', {
+        expression: `(function () { document.getElementById('btn-start').click(); return true; })()`,
+    });
+
     // Give the page time to fetch assets, open the socket, and run a few frames.
-    await sleep(9000);
+    await sleep(6000);
 
     const probe = `(function () {
         const canvas = document.querySelector('canvas');
@@ -199,13 +287,19 @@ try {
             canvasH: canvas ? canvas.height : 0,
             loadingVisible: visible('loading'),
             uiVisible: visible('ui'),
+            menuVisible: visible('screen-menu'),
             lostVisible: visible('connection-lost'),
             roundNumber: txt('round-number'),
             roundTime: txt('round-time'),
             seatLabel: txt('seat-label'),
+            roomChip: txt('room-chip'),
             hpNames: [0,1,2,3].map(function (i) { return txt('hb-' + i + '-name'); }),
             hpValues: [0,1,2,3].map(function (i) { return txt('hb-' + i + '-hp'); }),
             hpFills: [0,1,2,3].map(function (i) { return fill('hb-' + i + '-fill'); }),
+            seatColors: [0,1,2,3].map(function (i) {
+                var el = document.getElementById('hb-' + i);
+                return el ? el.style.getPropertyValue('--seat') : null;
+            }),
             localSeats: [0,1,2,3].filter(function (i) {
                 const el = document.getElementById('hb-' + i);
                 return el && el.className.indexOf('is-local') !== -1;
@@ -226,6 +320,7 @@ try {
           consoleErrors.slice(0, 3).join(' | '));
     check('WebSocket connected (loading overlay hidden)', first.loadingVisible === false);
     check('game UI became visible', first.uiVisible === true);
+    check('the lobby gives way to the match', first.menuVisible === false);
     check('disconnect banner is hidden', first.lostVisible === false);
     check('Three.js canvas exists and is sized',
           first.canvas && first.canvasW > 0 && first.canvasH > 0,
@@ -234,6 +329,13 @@ try {
           `round="${first.roundNumber}"`);
     check('HUD shows the local seat wall', !!first.seatLabel && first.seatLabel.length > 0,
           `seat="${first.seatLabel}"`);
+    check('HUD shows which room we are playing in',
+          /Sala [A-Z2-9]{5}|Partida rápida/.test(String(first.roomChip)),
+          `room="${first.roomChip}"`);
+    check('each health bar carries its seat colour',
+          first.seatColors.filter(Boolean).length === 4 &&
+          new Set(first.seatColors).size === 4,
+          first.seatColors.join(' '));
     check('health bars are labelled from server state',
           first.hpNames.every((n) => !!n && n.length > 0),
           first.hpNames.join(', '));

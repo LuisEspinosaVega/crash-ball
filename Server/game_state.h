@@ -110,14 +110,35 @@ class GameEngine {
 public:
     GameEngine();
 
+    // ─── Match lifecycle ────────────────────────────────────────────
+    //
+    // A room exists before its match does: the engine stays idle in "lobby"
+    // (matchStarted() == false, update() does nothing) until the host presses
+    // Start, which calls startMatch().
+    void startMatch(int roundsToWin);
+    void stopMatch();
+    bool matchStarted() const { return matchStarted_; }
+    // Restarts once the match has been decided. Legacy: the R key.
+    void requestRestart();
+
+    // ─── Seats ──────────────────────────────────────────────────────
     // Seats a human. Takes a free seat, otherwise takes over a bot's seat.
     // Returns the seat index, or -1 when every seat already has a human.
     int join(const std::string& name);
+    // Frees the seat entirely (the wall goes back to a fresh bot).
     void leave(int seat);
+    // Hands the seat to the AI while keeping hp, score and name, so a player
+    // who drops out mid-round does not simply lose the wall. Paired with
+    // join(), which reclaims it when they come back.
+    void hostToBot(int seat);
+    // Takes a wall back from the AI. Used when a player reconnects to the room
+    // they were already in. Returns false when the seat is gone or is a live
+    // human's.
+    bool claimSeat(int seat, const std::string& name);
+    int humanSeats() const;
 
     void setMove(int seat, float move);
     void requestDash(int seat);
-    void requestRestart();
     void setBotDifficulty(Difficulty difficulty);
     // Rounds needed to win the match; mainly useful to shorten test matches.
     void setRoundsToWin(int rounds);
@@ -131,6 +152,7 @@ private:
     GameState state_;
     Difficulty botDifficulty_ = Difficulty::Hard;
     std::mt19937 rng_;
+    bool matchStarted_ = false;
 
     void startRound();
     void fillEmptySeatsWithBots();

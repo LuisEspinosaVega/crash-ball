@@ -38,7 +38,9 @@ endif()
 if(WIN32)
     # Winsock. MSVC gets threading from the CRT, so pthread must not be linked
     # here — doing so unconditionally was one of the original build failures.
-    target_link_libraries(server PRIVATE ws2_32)
+    # winmm provides timeBeginPeriod: without it Windows sleeps in 15.6 ms steps
+    # and the 60 Hz game loop silently runs at half speed.
+    target_link_libraries(server PRIVATE ws2_32 winmm)
 else()
     find_package(Threads REQUIRED)
     target_link_libraries(server PRIVATE Threads::Threads)

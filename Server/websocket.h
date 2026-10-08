@@ -1,4 +1,4 @@
-// websocket.h — Sockets + a minimal, correct RFC 6455 WebSocket server.
+// websocket.h — Minimal, correct RFC 6455 WebSocket server.
 //
 // Browsers cannot open raw TCP sockets, so the server has to speak real
 // WebSocket. This implements exactly what the game needs: the HTTP upgrade
@@ -6,198 +6,23 @@
 // text frame encoding/decoding with masking, 16/64-bit lengths, continuation
 // frames, ping/pong and close. No external dependencies, no TLS.
 //
-// The original code faked this: it XORed the key with a *misspelled* GUID and
-// "base64"-encoded the result with a broken bit shift, which no browser would
-// ever accept.
+// The I/O model is the interesting part:
+//
+//   * Reads block (via select, see setReceiveWait) so the reader thread stays
+//     simple, but the underlying socket is non-blocking.
+//   * Writes never block. encodeFrame() appends to a caller-owned buffer and
+//     flushPending() pushes as much of it as the kernel accepts; the rest stays
+//     queued for a later tick. The game loop calls it, so a stalled client can
+//     only ever lose its own frames.
 
 #ifndef CRASHBALL_WEBSOCKET_H
 #define CRASHBALL_WEBSOCKET_H
 
-#ifdef _WIN32
-#  ifndef WIN32_LEAN_AND_MEAN
-#    define WIN32_LEAN_AND_MEAN
-#  endif
-#  include <winsock2.h>
-#  include <ws2tcpip.h>
-#else
-#  include <arpa/inet.h>
-#  include <cerrno>
-#  include <csignal>
-#  include <netinet/in.h>
-#  include <netinet/tcp.h>
-#  include <sys/socket.h>
-#  include <unistd.h>
-#endif
+#include "net.h"
 
 #include <cstdint>
 #include <cstring>
 #include <string>
-
-#ifndef MSG_NOSIGNAL
-#  define MSG_NOSIGNAL 0
-#endif
-
-// ─── Socket primitives ─────────────────────────────────────────────
-
-namespace net {
-
-#ifdef _WIN32
-using socket_t = SOCKET;
-constexpr socket_t kInvalidSocket = INVALID_SOCKET;
-#else
-using socket_t = int;
-constexpr socket_t kInvalidSocket = -1;
-#endif
-
-// Must be called once before any other socket call. Returns false if the
-// platform's networking stack could not be initialised.
-inline bool startup() {
-#ifdef _WIN32
-    WSADATA data;
-    return WSAStartup(MAKEWORD(2, 2), &data) == 0;
-#else
-    // A client that vanishes mid-send must not kill the whole server.
-    std::signal(SIGPIPE, SIG_IGN);
-    return true;
-#endif
-}
-
-inline void shutdown() {
-#ifdef _WIN32
-    WSACleanup();
-#endif
-}
-
-inline void closeSocket(socket_t s) {
-    if (s == kInvalidSocket) return;
-#ifdef _WIN32
-    ::closesocket(s);
-#else
-    ::close(s);
-#endif
-}
-
-inline int lastError() {
-#ifdef _WIN32
-    return WSAGetLastError();
-#else
-    return errno;
-#endif
-}
-
-inline int recvSome(socket_t s, char* buf, int len) {
-#ifdef _WIN32
-    return ::recv(s, buf, len, 0);
-#else
-    return static_cast<int>(::recv(s, buf, static_cast<size_t>(len), 0));
-#endif
-}
-
-inline int sendSome(socket_t s, const char* buf, int len) {
-#ifdef _WIN32
-    return ::send(s, buf, len, 0);
-#else
-    return static_cast<int>(::send(s, buf, static_cast<size_t>(len), MSG_NOSIGNAL));
-#endif
-}
-
-inline void setNoDelay(socket_t s) {
-    int yes = 1;
-    ::setsockopt(s, IPPROTO_TCP, TCP_NODELAY,
-                 reinterpret_cast<const char*>(&yes), sizeof(yes));
-}
-
-// Bounds how long a single send can block, so one unresponsive client cannot
-// stall the shared game loop that is broadcasting to everybody.
-inline void setSendTimeout(socket_t s, int millis) {
-#ifdef _WIN32
-    DWORD timeout = static_cast<DWORD>(millis);
-#else
-    struct timeval timeout;
-    timeout.tv_sec = millis / 1000;
-    timeout.tv_usec = (millis % 1000) * 1000;
-#endif
-    ::setsockopt(s, SOL_SOCKET, SO_SNDTIMEO,
-                 reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-}
-
-// Creates a listening socket on `port`. Prefers a dual-stack IPv6 socket so
-// that both "localhost" (::1) and 127.0.0.1 reach us, and falls back to IPv4.
-inline socket_t listenTcp(uint16_t port, int backlog, std::string& error) {
-    int reuse = 1;
-
-    socket_t s = ::socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-    if (s != kInvalidSocket) {
-        int v6only = 0;  // also accept IPv4-mapped connections
-        ::setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY,
-                     reinterpret_cast<const char*>(&v6only), sizeof(v6only));
-        ::setsockopt(s, SOL_SOCKET, SO_REUSEADDR,
-                     reinterpret_cast<const char*>(&reuse), sizeof(reuse));
-
-        sockaddr_in6 addr6;
-        std::memset(&addr6, 0, sizeof(addr6));
-        addr6.sin6_family = AF_INET6;
-        addr6.sin6_addr = in6addr_any;
-        addr6.sin6_port = htons(port);
-
-        if (::bind(s, reinterpret_cast<sockaddr*>(&addr6), sizeof(addr6)) == 0 &&
-            ::listen(s, backlog) == 0) {
-            return s;
-        }
-        closeSocket(s);
-    }
-
-    s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s == kInvalidSocket) {
-        error = "socket() failed (error " + std::to_string(lastError()) + ")";
-        return kInvalidSocket;
-    }
-    ::setsockopt(s, SOL_SOCKET, SO_REUSEADDR,
-                 reinterpret_cast<const char*>(&reuse), sizeof(reuse));
-
-    sockaddr_in addr4;
-    std::memset(&addr4, 0, sizeof(addr4));
-    addr4.sin_family = AF_INET;
-    addr4.sin_addr.s_addr = INADDR_ANY;
-    addr4.sin_port = htons(port);
-
-    if (::bind(s, reinterpret_cast<sockaddr*>(&addr4), sizeof(addr4)) != 0 ||
-        ::listen(s, backlog) != 0) {
-        error = "cannot bind/listen on port " + std::to_string(port) +
-                " (error " + std::to_string(lastError()) + ")";
-        closeSocket(s);
-        return kInvalidSocket;
-    }
-    return s;
-}
-
-inline socket_t acceptTcp(socket_t listener) {
-    return ::accept(listener, nullptr, nullptr);
-}
-
-// Waits until `s` has bytes to read. Returns 1 when ready, 0 on timeout and
-// -1 on error. Used so the accept loop can poll a shutdown flag instead of
-// blocking forever inside accept().
-inline int waitReadable(socket_t s, int millis) {
-    fd_set set;
-    FD_ZERO(&set);
-    FD_SET(s, &set);
-
-    struct timeval timeout;
-    timeout.tv_sec = millis / 1000;
-    timeout.tv_usec = (millis % 1000) * 1000;
-
-#ifdef _WIN32
-    const int rc = ::select(0, &set, nullptr, nullptr, &timeout);
-#else
-    const int rc = ::select(s + 1, &set, nullptr, nullptr, &timeout);
-#endif
-    if (rc > 0) return 1;
-    if (rc == 0) return 0;
-    return -1;
-}
-
-}  // namespace net
 
 // ─── SHA-1 (RFC 3174) ──────────────────────────────────────────────
 // Needed only for the WebSocket handshake.
@@ -287,7 +112,7 @@ private:
                 k = 0x6ED9EBA1u;
             } else if (i < 60) {
                 f = (b & c) | (b & d) | (c & d);
-                k = 0x8F1BBCDCu;
+                k = 0x8F1BBCDCu;   // SHA-1's third constant; not the SHA-256 one
             } else {
                 f = b ^ c ^ d;
                 k = 0xCA62C1D6u;
@@ -355,6 +180,14 @@ inline std::string computeAcceptKey(const std::string& clientKey) {
 
 class WebSocket {
 public:
+    static constexpr uint8_t kOpText = 0x1;
+    static constexpr uint8_t kOpClose = 0x8;
+    static constexpr uint8_t kOpPing = 0x9;
+    static constexpr uint8_t kOpPong = 0xA;
+
+    // Result of flushPending().
+    enum class Flush { Done, Partial, Dead };
+
     WebSocket() = default;
     ~WebSocket() { close(); }
 
@@ -369,6 +202,13 @@ public:
     }
 
     bool valid() const { return sock_ != net::kInvalidSocket; }
+    net::socket_t socket() const { return sock_; }
+
+    // How long a read may wait before it gives up and reports "nothing yet".
+    // kWaitForever keeps a WebSocket open for as long as the player wants.
+    void setReceiveWait(int millis) { readWaitMs_ = millis; }
+
+    // ─── HTTP upgrade ──────────────────────────────────────────────
 
     // Blocks until one complete HTTP request header block has arrived. Any
     // bytes that follow it stay buffered (a client may pipeline its first
@@ -385,44 +225,24 @@ public:
         return true;
     }
 
-    // Answers the upgrade request with 101 Switching Protocols.
-    bool acceptHandshake(const std::string& header) {
+    // Builds the 101 response into `out`. Returns false (and writes a 400 into
+    // `out`) when the request is not a valid upgrade.
+    bool handshakeResponse(const std::string& header, std::string& out) {
         const std::string key = headerValue(header, "sec-websocket-key");
         if (key.empty()) {
-            static const char kBad[] =
+            out =
                 "HTTP/1.1 400 Bad Request\r\n"
                 "Connection: close\r\n"
                 "Content-Length: 0\r\n\r\n";
-            writeAll(kBad, sizeof(kBad) - 1);
             return false;
         }
 
-        const std::string response =
+        out =
             "HTTP/1.1 101 Switching Protocols\r\n"
             "Upgrade: websocket\r\n"
             "Connection: Upgrade\r\n"
             "Sec-WebSocket-Accept: " + computeAcceptKey(key) + "\r\n\r\n";
-        return writeAll(response.data(), response.size());
-    }
-
-    // Raw write, used to answer plain HTTP requests.
-    bool sendRaw(const std::string& bytes) {
-        return writeAll(bytes.data(), bytes.size());
-    }
-
-    // Bounds how long a blocking read may wait. Used for idle HTTP
-    // keep-alive connections; a timeout surfaces as a failed read.
-    void setReceiveTimeout(int millis) {
-        if (!valid()) return;
-#ifdef _WIN32
-        DWORD timeout = static_cast<DWORD>(millis);
-#else
-        struct timeval timeout;
-        timeout.tv_sec = millis / 1000;
-        timeout.tv_usec = (millis % 1000) * 1000;
-#endif
-        ::setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO,
-                     reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+        return true;
     }
 
     // Case-insensitive lookup of a single header in a raw request header block.
@@ -462,28 +282,71 @@ public:
         return std::string();
     }
 
-    bool sendText(const std::string& payload) {
-        return sendFrame(0x1, reinterpret_cast<const uint8_t*>(payload.data()),
-                         payload.size());
+    // ─── Framing (pure: no syscalls) ───────────────────────────────
+
+    // Appends one server->client frame. Server frames are never masked, per
+    // RFC 6455 §5.1.
+    static void encodeFrame(uint8_t opcode, const std::string& payload,
+                            std::string& out) {
+        const size_t len = payload.size();
+        out.push_back(static_cast<char>(0x80 | opcode));  // FIN + opcode
+
+        if (len < 126) {
+            out.push_back(static_cast<char>(len));
+        } else if (len <= 0xFFFF) {
+            out.push_back(static_cast<char>(126));
+            out.push_back(static_cast<char>((len >> 8) & 0xFF));
+            out.push_back(static_cast<char>(len & 0xFF));
+        } else {
+            out.push_back(static_cast<char>(127));
+            for (int i = 7; i >= 0; --i) {
+                out.push_back(
+                    static_cast<char>((static_cast<uint64_t>(len) >> (8 * i)) & 0xFF));
+            }
+        }
+        out.append(payload);
     }
 
-    bool sendClose(uint16_t code = 1000) {
-        const uint8_t body[2] = {static_cast<uint8_t>(code >> 8),
-                                 static_cast<uint8_t>(code & 0xFF)};
-        const bool ok = sendFrame(0x8, body, sizeof(body));
-        // Half-close: stop reading, but let the peer's close frame arrive.
-        if (sock_ != net::kInvalidSocket) {
-#ifdef _WIN32
-            ::shutdown(sock_, SD_SEND);
-#else
-            ::shutdown(sock_, SHUT_WR);
-#endif
-        }
-        return ok;
+    static void encodeText(const std::string& payload, std::string& out) {
+        encodeFrame(kOpText, payload, out);
     }
+
+    static void encodeClose(uint16_t code, std::string& out) {
+        const char body[2] = {static_cast<char>(code >> 8),
+                              static_cast<char>(code & 0xFF)};
+        encodeFrame(kOpClose, std::string(body, 2), out);
+    }
+
+    // Pushes as much of `pending` as the socket will take right now, erasing
+    // what went out. Never blocks.
+    Flush flushPending(std::string& pending) {
+        if (!valid() || pending.empty()) return Flush::Done;
+
+        while (!pending.empty()) {
+            const int chunk = pending.size() > 0x7FFFFFFF
+                                  ? 0x7FFFFFFF
+                                  : static_cast<int>(pending.size());
+            const int sent = net::sendSome(sock_, pending.data(), chunk);
+            if (sent > 0) {
+                pending.erase(0, static_cast<size_t>(sent));
+                continue;
+            }
+            if (sent < 0 && net::wouldBlock()) return Flush::Partial;
+            return Flush::Dead;
+        }
+        return Flush::Done;
+    }
+
+    // True when the kernel has room again, i.e. a queued frame can move.
+    bool canWriteNow(int millis) const {
+        if (!valid()) return false;
+        return net::waitWritable(sock_, millis) == 1;
+    }
+
+    // ─── Reading ───────────────────────────────────────────────────
 
     // Blocks until one complete text message arrives. Returns false when the
-    // peer closed the connection or a protocol error occurred.
+    // peer closed the connection, the read timed out, or a protocol error hit.
     bool recvText(std::string& out) {
         out.clear();
         for (;;) {
@@ -513,57 +376,26 @@ private:
     static constexpr size_t kMaxMessageBytes = 256 * 1024;
 
     net::socket_t sock_ = net::kInvalidSocket;
+    int readWaitMs_ = net::kWaitForever;
     std::string in_;        // received but unconsumed bytes
     std::string fragment_;  // accumulates continuation frames
 
     bool fill() {
+        // The socket itself is non-blocking so that writes stay non-blocking;
+        // the wait here is what makes this read block exactly like before.
+        if (readWaitMs_ != 0) {
+            const int ready = net::waitReadable(sock_, readWaitMs_);
+            if (ready <= 0) return false;   // timed out or the socket died
+        }
+
         char buf[8192];
         const int n = net::recvSome(sock_, buf, static_cast<int>(sizeof(buf)));
-        if (n <= 0) return false;
+        if (n <= 0) {
+            if (n < 0 && net::wouldBlock()) return false;
+            return false;
+        }
         in_.append(buf, static_cast<size_t>(n));
         return true;
-    }
-
-    bool writeAll(const void* data, size_t len) {
-        const char* cursor = static_cast<const char*>(data);
-        size_t remaining = len;
-        while (remaining > 0) {
-            const int chunk = remaining > 0x7FFFFFFF
-                                  ? 0x7FFFFFFF
-                                  : static_cast<int>(remaining);
-            const int sent = net::sendSome(sock_, cursor, chunk);
-            if (sent <= 0) return false;
-            cursor += sent;
-            remaining -= static_cast<size_t>(sent);
-        }
-        return true;
-    }
-
-    bool sendFrame(uint8_t opcode, const uint8_t* data, size_t len) {
-        if (!valid()) return false;
-
-        std::string frame;
-        frame.reserve(len + 10);
-        frame.push_back(static_cast<char>(0x80 | opcode));  // FIN + opcode
-
-        if (len < 126) {
-            frame.push_back(static_cast<char>(len));
-        } else if (len <= 0xFFFF) {
-            frame.push_back(static_cast<char>(126));
-            frame.push_back(static_cast<char>((len >> 8) & 0xFF));
-            frame.push_back(static_cast<char>(len & 0xFF));
-        } else {
-            frame.push_back(static_cast<char>(127));
-            for (int i = 7; i >= 0; --i) {
-                frame.push_back(static_cast<char>(
-                    (static_cast<uint64_t>(len) >> (8 * i)) & 0xFF));
-            }
-        }
-
-        if (len > 0) {
-            frame.append(reinterpret_cast<const char*>(data), len);
-        }
-        return writeAll(frame.data(), frame.size());
     }
 
     // Extracts one frame from `in_`, or reports that more bytes are needed.
@@ -643,21 +475,34 @@ private:
                 return FrameResult::Error;
 
             case 0x8:  // close
-                sendClose(1000);
                 return FrameResult::Closed;
 
-            case 0x9:  // ping -> pong
-                sendFrame(0xA, reinterpret_cast<const uint8_t*>(payload.data()),
-                          payload.size());
+            // Ping/pong are handled by the caller through recvPing(); anything
+            // that reaches here unhandled is simply consumed.
+            case 0x9:
+                pendingPong_ = payload;
                 return FrameResult::Consumed;
 
-            case 0xA:  // pong
+            case 0xA:
                 return FrameResult::Consumed;
 
             default:   // reserved opcodes
                 return FrameResult::Error;
         }
     }
+
+public:
+    // Non-empty when the peer sent a ping since the last call; the reply must
+    // be written as a pong frame with the same payload.
+    bool takePendingPong(std::string& out) {
+        if (pendingPong_.empty()) return false;
+        out = pendingPong_;
+        pendingPong_.clear();
+        return true;
+    }
+
+private:
+    std::string pendingPong_;
 };
 
 #endif  // CRASHBALL_WEBSOCKET_H

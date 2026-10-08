@@ -92,6 +92,48 @@ GameEngine::GameEngine()
     startRound();
 }
 
+// ─── Match lifecycle ───────────────────────────────────────────────
+
+void GameEngine::startMatch(int roundsToWin) {
+    setRoundsToWin(roundsToWin);
+    state_.round.matchOver = false;
+    state_.round.matchWinner = -1;
+    state_.round.roundNumber = 0;   // startRound() bumps it to 1
+    for (int i = 0; i < MAX_PLAYERS; ++i) {
+        state_.players[i].roundsWon = 0;
+    }
+    matchStarted_ = true;
+    startRound();
+}
+
+void GameEngine::stopMatch() {
+    // The room goes back to its lobby: humans lose their walls, the bots take
+    // over again and the engine stops simulating until the host starts a new
+    // match.
+    for (int i = 0; i < MAX_PLAYERS; ++i) {
+        PlayerState& p = state_.players[i];
+        if (p.occupied && !p.isBot) {
+            p.occupied = false;
+            p.isBot = false;
+            p.name.clear();
+            p.move = 0.0f;
+            p.dashTimer = 0.0f;
+            p.dashing = false;
+        }
+    }
+    matchStarted_ = false;
+    state_.round.matchOver = false;
+    state_.round.matchWinner = -1;
+    state_.round.roundOver = false;
+    state_.round.countdown = 0.0f;
+    fillEmptySeatsWithBots();
+}
+
+void GameEngine::requestRestart() {
+    if (!matchStarted_ || !state_.round.matchOver) return;
+    startMatch(state_.round.roundsToWin);
+}
+
 void GameEngine::fillEmptySeatsWithBots() {
     for (int i = 0; i < MAX_PLAYERS; ++i) {
         PlayerState& p = state_.players[i];
@@ -159,6 +201,44 @@ void GameEngine::leave(int seat) {
     fillEmptySeatsWithBots();
 }
 
+// A player who drops mid-round keeps their wall, their health and their score:
+// the AI simply plays it until they reconnect. Losing a wall because a network
+// hiccupped is the fastest way to make an online game feel unfair.
+void GameEngine::hostToBot(int seat) {
+    if (seat < 0 || seat >= MAX_PLAYERS) return;
+    PlayerState& p = state_.players[seat];
+    if (!p.occupied) return;
+
+    p.isBot = true;
+    p.move = 0.0f;
+    p.dashTimer = 0.0f;
+    p.dashing = false;
+    p.botTimer = 0.0f;
+}
+
+int GameEngine::humanSeats() const {
+    int count = 0;
+    for (int i = 0; i < MAX_PLAYERS; ++i) {
+        const PlayerState& p = state_.players[i];
+        if (p.occupied && !p.isBot) ++count;
+    }
+    return count;
+}
+
+bool GameEngine::claimSeat(int seat, const std::string& name) {
+    if (seat < 0 || seat >= MAX_PLAYERS) return false;
+    PlayerState& p = state_.players[seat];
+    if (!p.occupied) return false;
+    if (!p.isBot) return false;   // somebody live already owns it
+
+    p.isBot = false;
+    p.name = name.empty() ? p.name : name;
+    p.move = 0.0f;
+    p.botTimer = 0.0f;
+    p.botTarget = 0.0f;
+    return true;
+}
+
 void GameEngine::setBotDifficulty(Difficulty difficulty) {
     botDifficulty_ = difficulty;
 }
@@ -197,18 +277,6 @@ void GameEngine::requestDash(int seat) {
     p.dashTimer = DASH_DURATION;
     p.dashCooldown = DASH_COOLDOWN;
     p.dashing = true;
-}
-
-void GameEngine::requestRestart() {
-    if (!state_.round.matchOver) return;
-
-    state_.round.matchOver = false;
-    state_.round.matchWinner = -1;
-    state_.round.roundNumber = 0;
-    for (int i = 0; i < MAX_PLAYERS; ++i) {
-        state_.players[i].roundsWon = 0;
-    }
-    startRound();
 }
 
 // ─── Round flow ────────────────────────────────────────────────────
@@ -309,6 +377,10 @@ void GameEngine::spawnExtraBall() {
 void GameEngine::update(float dt) {
     if (dt <= 0.0f) return;
     if (dt > 0.25f) dt = 0.25f;   // a stalled loop must not teleport the world
+
+    // A room in its lobby has nothing to simulate: the host has not pressed
+    // Start yet.
+    if (!matchStarted_) return;
 
     if (state_.round.matchOver) return;   // idle until someone asks to restart
 
