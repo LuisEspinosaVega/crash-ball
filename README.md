@@ -274,9 +274,32 @@ a conectar. Está reportado en
 [microsoft/vscode#190020](https://github.com/microsoft/vscode/issues/190020).
 
 No es culpa del servidor: verificado con `tools/proxy-test.mjs`, que lo pone
-detrás de un proxy inverso de verdad y el WebSocket sube sin problema (3/3). Si
-te pasa con el túnel, el juego no se puede jugar ahí y no hay ajuste que lo
-arregle; usa el nginx de arriba, `ngrok` con `--http2`, o `cloudflared`.
+detrás de un proxy inverso de verdad y el WebSocket sube sin problema (3/3).
+
+**Un túnel que sí funciona: `cloudflared`.** Es el sustituto directo del de VS
+Code, sin montar nada:
+
+```powershell
+.\build\Release\server.exe 8080
+cloudflared tunnel --url http://127.0.0.1:8080
+```
+
+Imprime una URL `https://algo.trycloudflare.com`. Esa es la que se comparte. Sin
+cuenta, sin ficheros de configuración y **reenvía el salto a WebSocket**, que es
+justo lo que el de VS Code no hace.
+
+Comprobado de punta a punta, contra ese túnel público:
+
+```
+tunnel-live-test.mjs   3/3    WebSocket arriba, ping 97 ms de media
+browser-test.mjs      26/26   menú → crear sala → iniciar → HUD, desde fuera
+```
+
+Los ~95 ms de ping son la latencia del túnel más la de Internet; a esa distancia
+el juego va con el retardo adaptativo que ya tiene, y se nota pero se juega.
+
+Si prefieres túnel propio de verdad, `ngrok http 8080` también funciona; lo que
+no funciona es el de VS Code, y no por configuración: es un límite suyo.
 
 Para distinguirlo rápido: si la página carga pero el socket no, el servidor
 está bien y el salto no llega. El juego ahora avisa de esto solo, en vez de
@@ -509,6 +532,7 @@ Estado actual, medido sobre esta build (MSVC, Windows, `easy`, 1 ronda):
 | `proxy-test.mjs` | **3/3** |
 | `tunnel-test.mjs` | **3/3** |
 | `tunnel-ui-test.mjs` | **6/6** |
+| `tunnel-live-test.mjs` | **3/3** |
 | `server.exe --selftest` | **9/9** |
 
 `proxy-test.mjs` pone el servidor detrás de un proxy inverso real y comprueba que
@@ -518,6 +542,10 @@ que falla: un destino que acepta la conexión y no contesta nunca al handshake,
 que es lo que hace un túnel mal configurado. El navegador se queda en
 `CONNECTING` sin error ni cierre, así que sin el reloj del cliente el fallo sería
 invisible. `tunnel-ui-test.mjs` verifica que la interfaz explica la causa.
+
+`tunnel-live-test.mjs` mide contra un túnel real de Internet (recibe la URL como
+argumento) y `browser-test.mjs` recorre el juego entero a través de él. Son las
+dos que dicen si se puede jugar desde fuera, no solo si el servidor funciona.
 
 `--selftest` incluye una comprobación del apagado: mide en milisegundos que el
 hilo lector se suelta al ver la bandera de parada. Es la única forma fiable de
