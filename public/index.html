@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
+    <title>Crash Ball Arena</title>
+    <link rel="icon" type="image/png" href="favicon.png">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- El renderer de Three.js inserta aquí su <canvas>. -->
+    <div id="stage"></div>
+
+    <!-- Overlay de carga: visible hasta que el WebSocket se abre. -->
+    <div id="loading">
+        <div class="loading-spinner"></div>
+        <p class="loading-text" id="loading-text">Conectando al servidor…</p>
+    </div>
+
+    <!-- Aviso de conexión perdida (se muestra mientras se reintenta). -->
+    <div id="connection-lost" class="hidden">
+        <strong>Conexión perdida.</strong>
+        <span id="connection-lost-detail">Reintentando cada 3 s…</span>
+    </div>
+
+    <!-- Cuenta atrás de inicio de ronda. -->
+    <div id="countdown" class="hidden">3</div>
+
+    <!-- HUD principal. -->
+    <div id="ui" class="hidden">
+        <div id="hud">
+            <div class="stat" id="round-number">Ronda 1</div>
+            <div class="stat" id="round-time">00:00</div>
+            <div class="stat" id="round-goal">Primero a 3</div>
+            <div class="stat" id="seat-label">Tú: —</div>
+        </div>
+
+        <!-- Una fila por asiento; el color de cada una se inyecta desde game.js. -->
+        <div id="health-bars">
+            <div class="health-row" id="hb-0">
+                <span class="health-name" id="hb-0-name">Jugador 1</span>
+                <span class="health-track"><span class="health-fill" id="hb-0-fill"></span></span>
+                <span class="health-hp" id="hb-0-hp">15/15</span>
+            </div>
+            <div class="health-row" id="hb-1">
+                <span class="health-name" id="hb-1-name">Jugador 2</span>
+                <span class="health-track"><span class="health-fill" id="hb-1-fill"></span></span>
+                <span class="health-hp" id="hb-1-hp">15/15</span>
+            </div>
+            <div class="health-row" id="hb-2">
+                <span class="health-name" id="hb-2-name">Jugador 3</span>
+                <span class="health-track"><span class="health-fill" id="hb-2-fill"></span></span>
+                <span class="health-hp" id="hb-2-hp">15/15</span>
+            </div>
+            <div class="health-row" id="hb-3">
+                <span class="health-name" id="hb-3-name">Jugador 4</span>
+                <span class="health-track"><span class="health-fill" id="hb-3-fill"></span></span>
+                <span class="health-hp" id="hb-3-hp">15/15</span>
+            </div>
+        </div>
+
+        <!-- Indicador de dash del jugador local (estimación local, ver game.js). -->
+        <div id="dash-indicator" class="is-ready">
+            <span class="dash-label" id="dash-label">DASH LISTO</span>
+            <span class="dash-track"><span class="dash-fill" id="dash-fill"></span></span>
+        </div>
+
+        <div id="controls">
+            <p>← → o A/D: mover &nbsp;·&nbsp; ESPACIO / ENTER: dash &nbsp;·&nbsp; R: reiniciar partida</p>
+        </div>
+    </div>
+
+    <!-- Fin de ronda. -->
+    <div id="overlay-round" class="overlay hidden">
+        <div class="overlay-panel">
+            <h1 id="overlay-round-title">Ronda terminada</h1>
+            <p id="overlay-round-text"></p>
+        </div>
+    </div>
+
+    <!-- Fin de partida. -->
+    <div id="overlay-match" class="overlay hidden">
+        <div class="overlay-panel">
+            <h1 id="overlay-match-title">Partida terminada</h1>
+            <p id="overlay-match-text"></p>
+            <button id="btn-restart" type="button">Reiniciar partida</button>
+        </div>
+    </div>
+
+    <!-- Three.js r128 vendorizado: sin CDN ni peticiones externas. -->
+    <script src="vendor/three.min.js"></script>
+    <script src="game.js"></script>
+</body>
+</html>

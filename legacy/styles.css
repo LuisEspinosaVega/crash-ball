@@ -1,0 +1,209 @@
+/* styles.css — Cruda: Cruda Ball Arena UI */
+
+:root {
+    --bg-dark: #0a0a1a;
+    --bg-panel: rgba(15, 15, 40, 0.9);
+    --accent: #00e5ff;
+    --accent2: #ff4081;
+    --accent3: #7c4dff;
+    --accent4: #00c853;
+    --text: #e0e0e0;
+    --text-dim: #888;
+    --border: rgba(100, 100, 140, 0.3);
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    background: var(--bg-dark);
+    color: var(--text);
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+}
+
+/* ─── Loading Screen ─────────────────────────────────────────────── */
+
+#loading {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-dark);
+    z-index: 1000;
+}
+
+.loading-spinner {
+    width: 50px;
+    height: 50px;
+    border: 4px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-bottom: 20px;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ─── UI ─────────────────────────────────────────────────────────── */
+
+#ui {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 100;
+}
+
+#hud {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 20px;
+    font-size: 14px;
+    padding: 8px 16px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    pointer-events: auto;
+}
+
+.stat {
+    color: var(--text);
+    background: rgba(0, 0, 0, 0.4);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-weight: 600;
+}
+
+/* ─── Health Bars ────────────────────────────────────────────────── */
+
+#health-bars {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 400px;
+    pointer-events: auto;
+}
+
+.health-bar-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+}
+
+.health-bar-name {
+    width: 80px;
+    font-weight: bold;
+    flex-shrink: 0;
+}
+
+.health-bar-track {
+    width: 250px;
+    height: 20px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+}
+
+.health-bar-fill {
+    height: 100%;
+    width: 100%;
+    border-radius: 10px;
+    transition: width 0.3s ease;
+}
+
+/* ─── Controls Hint ──────────────────────────────────────────────── */
+
+#controls {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 13px;
+    background: var(--bg-panel);
+    padding: 8px 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    pointer-events: auto;
+}
+
+/* ─── Game Over ──────────────────────────────────────────────────── */
+
+#game-over {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(10, 10, 26, 0.9);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 500;
+}
+
+#game-over h1 {
+    font-size: 3em;
+    margin-bottom: 20px;
+    color: var(--accent);
+}
+
+#game-over-winner {
+    font-size: 1.5em;
+    color: var(--text);
+    margin-bottom: 10px;
+}
+
+#game-over-score {
+    font-size: 1.2em;
+    color: var(--text-dim);
+    margin-bottom: 30px;
+}
+
+button {
+    background: var(--accent);
+    color: var(--bg-dark);
+    border: none;
+    padding: 12px 32px;
+    font-size: 18px;
+    font-weight: bold;
+    border-radius: 8px;
+    cursor: pointer;
+    margin: 5px;
+    transition: opacity 0.2s;
+}
+
+button:hover {
+    opacity: 0.8;
+}
+
+button.secondary {
+    background: var(--border);
+    color: var(--text);
+}

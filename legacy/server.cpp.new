@@ -1,0 +1,213 @@
+void CrashBallServer::handleClientInternal(int fd) {
+    char buffer[4096];
+    int bytes;
+    bool wsHandshakeSent = false;
+    
+    while (running_) {
+        bytes = serverSocket_.read(buffer, sizeof(buffer) - 1);
+        if (bytes <= 0) {
+            break;
+        }
+        buffer[bytes] = '\0';
+        
+        std::string msg(buffer, bytes);
+        
+        // Detect WebSocket handshake
+        if (!wsHandshakeSent && msg.find("GET / HTTP") != std::string::npos) {
+            std::string wsKey = extractWebSocketKey(msg);
+            if (!wsKey.empty()) {
+                sendWebSocketAccept(wsKey, serverSocket_);
+                wsHandshakeSent = true;
+                std::cout << "WebSocket upgrade" << std::endl;
+                continue;
+            }
+        }
+        
+        std::string payload = msg;
+        if (wsHandshakeSent) {
+            if (!msg.empty() && (static_cast<uint8_t>(msg[0]) & 0x80) == 0 && (msg[0] & 0x7F) == 0x09) {
+                payload = decodeWebSocketFrame(msg);
+            }
+        }
+        
+        if (payload.find("\"type\":\"JOIN\"") != std::string::npos) {
+            int seat = extractInt(payload, "seat");
+            int type = extractInt(payload, "playerType");
+            
+            if (seat >= 0 && seat < static_cast<int>(clients_.size())) {
+                std::lock_guard<std::mutex> lock(clientMutex_);
+                if (clients_[seat].connected) {
+                    if (type == 0) {
+                        std::string name = extractString(payload, "name");
+                        strncpy(clients_[seat].name, name.c_str(), sizeof(clients_[seat].name) - 1);
+                        clients_[seat].name[sizeof(clients_[seat].name) - 1] = '\0';
+                    }
+                }
+            }
+            
+            uint16_t playerType = (type == 0) ? PlayerType::HUMAN : PlayerType::BOT;
+            const char* playerName = extractString(payload, "name").c_str();
+            if (!playerName || playerName[0] == '\0') {
+                playerName = clients_[clients_.size() - 1].name;
+            }
+            uint16_t playerIdx = engine_.addPlayer(playerType, playerName);
+            if (playerIdx < MAX_PLAYERS) {
+                broadcastState();
+            }
+        } else if (payload.find("\"type\":\"INPUT\"") != std::string::npos) {
+            int player = extractInt(payload, "player");
+            float move = extractFloat(payload, "move");
+            if (player >= 0 && player < MAX_PLAYERS) {
+                engine_.processInput(static_cast<uint16_t>(player), 0.016f, move);
+            }
+        } else if (payload.find("\"type\":\"ATTACK\"") != std::string::npos) {
+            int player = extractInt(payload, "player");
+            if (player >= 0 && player < MAX_PLAYERS) {
+                if (!engine_.isEliminated(static_cast<uint16_t>(player))) {
+                    auto& playerState = engine_.getState().players[player];
+                    if (playerState.attackTimer <= 0.0f && playerState.health > 0) {
+                        playerState.attackTimer = ATTACK_COOLDOWN;
+                        for (uint16_t b = 0; b < engine_.getState().round.ballCount; b++) {
+                            auto& ball = engine_.getState().balls[b];
+                            float ballSide = ball.vx > 0 ? 1.0f : -1.0f;
+                            if (ballSide * player > 0) {
+                                float speed = std::sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
+                                float newSpeed = std::min(speed * ATTACK_SPEED_MULTIPLIER, BALL_SPEED_MAX);
+                                float angle = std::atan2(ball.vy, ball.vx);
+                                ball.vx = std::cos(angle) * newSpeed;
+                                ball.vy = std::sin(angle) * newSpeed;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    serverSocket_.close();
+    
+    {
+        std::lock_guard<std::mutex> lock(clientMutex_);
+        fdToSeat_.erase(fd);
+        for (auto& client : clients_) {
+            if (client.fd == fd) {
+                client.connected = false;
+                break;
+            }
+        }
+        int seat = -1;
+        for (auto& pair : fdToSeat_) {
+            if (pair.second == fd) {
+                seat = pair.first;
+                break;
+            }
+        }
+        if (seat >= 0) seatToFd_.erase(seat);
+    }
+    
+    broadcastState();
+    std::cout << "Client disconnected" << std::endl;
+}
+
+// ─── WebSocket Helpers ────────────────────────────────────────────────
+// Used by handleClientInternal() to decode WebSocket frames
+
+static std::string generateWebSocketAcceptKey(const std::string& key) {
+    static const std::string magic = "258EAFA5-E914-47DA-A2B7-D9C3B038DAE4F";
+    std::string result = key + magic;
+    
+    // XOR each byte
+    for (size_t i = 0; i < result.size(); i++) {
+        result[i] ^= magic[i % magic.size()];
+    }
+    
+    // Base64 encode
+    static const std::string base64Table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    
+    std::string encoded;
+    unsigned char charArray[3] = {0};
+    size_t i = 0;
+    
+    for (i = 0; i < result.size(); i += 3) {
+        charArray[0] = (unsigned char)(i < result.size() ? result[i] : 0);
+        charArray[1] = (unsigned char)((i + 1) < result.size() ? result[i + 1] : 0);
+        charArray[2] = (unsigned char)((i + 2) < result.size() ? result[i + 2] : 0);
+    
+        unsigned int chunk = 
+            (unsigned int)charArray[0] << 16 |
+            (unsigned int)charArray[1] << 8 |
+            (unsigned int)charArray[2];
+    
+        encoded += base64Table[(chunk >> 16) & 0x3F];
+        encoded += base64Table[(chunk >> 8) & 0x3F];
+        encoded += base64Table[(chunk >> 0) & 0x3F];
+        encoded += base64Table[(chunk >> 22) & 0x3F];
+    }
+    
+    // Remove padding (last two chars are always '=')
+    encoded.resize(encoded.size() - 2);
+    return encoded;
+}
+
+static std::string extractWebSocketKey(const std::string& message) {
+    size_t pos = message.find("Sec-WebSocket-Key: ");
+    if (pos == std::string::npos) return "";
+    pos += 17; // Length of "Sec-WebSocket-Key: "
+    size_t end = message.find('\r');
+    if (end != std::string::npos) {
+        return message.substr(pos, end - pos);
+    }
+    return message.substr(pos);
+}
+
+static void sendWebSocketAccept(const std::string& key, Socket& clientSocket) {
+    std::string acceptKey = generateWebSocketAcceptKey(key);
+    std::string response = 
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: " + acceptKey + "\r\n\r\n";
+    clientSocket.write(response.c_str(), response.size());
+}
+
+static std::string decodeWebSocketFrame(const std::string& frame) {
+    if (frame.empty()) return "";
+    
+    // First byte: mask and opcode
+    uint8_t firstByte = static_cast<uint8_t>(frame[0]);
+    bool masked = (firstByte & 0x80) != 0;
+    uint8_t opcode = firstByte & 0x7F;
+    
+    // Skip first byte (opcode/mask)
+    size_t offset = 1;
+    uint8_t length = frame[offset] & 0x7F;
+    offset++;
+    
+    if (length == 0x7F) {
+        // Extended length (16-bit)
+        length = (static_cast<uint8_t>(frame[offset]) << 8) | frame[offset + 1];
+        offset += 2;
+    }
+    
+    // Skip mask key (4 bytes)
+    if (masked) {
+        std::string maskKey(4);
+        maskKey[0] = frame[offset];
+        maskKey[1] = frame[offset + 1];
+        maskKey[2] = frame[offset + 2];
+        maskKey[3] = frame[offset + 3];
+        offset += 4;
+    }
+    
+    // Extract payload
+    std::string payload(frame.substr(offset), frame.size() - offset);
+    
+    // Unmask if necessary
+    if (masked) {
+        for (size_t i = 0; i < payload.size(); i++) {
+            payload[i] ^= maskKey[i % 4];
+        }
+    }
+    
+    return payload;
+}
