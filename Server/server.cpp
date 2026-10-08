@@ -133,6 +133,7 @@ struct Client {
     std::atomic<int> seat{-1};      // engine seat, -1 in the lobby
     std::atomic<int64_t> lastSeenMs{0};
     std::atomic<int64_t> lastSlowMs{0};
+    std::atomic<unsigned long long> activitySeen{0};
     std::atomic<unsigned long long> droppedFrames{0};
 
     Room* room = nullptr;    // guarded by lobbyMutex_
@@ -1316,9 +1317,12 @@ private:
             if (room->phase() == RoomPhase::Lobby) continue;   // lobby: no arena
 
             std::string payload;
+            bool started = false;
             {
                 std::lock_guard<std::mutex> lock(room->engineMutex());
-                payload = proto::state(*room, room->engine().state(), tick);
+                payload = proto::state(*room, room->engine().state(),
+                                       room->engine().matchStarted(), tick);
+                started = room->engine().matchStarted();
             }
 
             // Players get every frame; spectators every 6th. Someone who is
@@ -1340,7 +1344,17 @@ private:
             if (!client->alive.load() || !client->webSocketReady.load()) continue;
 
             const int64_t idle = now - client->lastSeenMs.load();
-            if (idle > kClientTimeoutMs) {
+
+            // recvText() se queda bloqueado dentro del socket consumiendo tramas
+            // de control, así que un espectador que no pulsa nada nunca pasa por
+            // el hilo de lectura. El contador de tráfico del socket es lo que
+            // dice si el cliente sigue ahí: sin esto, mirar y ser desconectado a
+            // los 35 s.
+            const unsigned long long activity = client->ws.activity();
+            if (activity != client->activitySeen.load(std::memory_order_relaxed)) {
+                client->activitySeen.store(activity, std::memory_order_relaxed);
+                client->lastSeenMs.store(now);
+            } else if (idle > kClientTimeoutMs) {
                 std::cout << "Cliente " << client->id << " descartado por inactividad ("
                           << idle << " ms)\n";
                 client->alive.store(false);

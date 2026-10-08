@@ -95,7 +95,8 @@ inline Difficulty difficultyFromName(const std::string& text, Difficulty fallbac
 
 // The authoritative snapshot. `seq` is monotonic per room so a client can
 // throw away anything that arrives out of order after a reconnect.
-inline std::string state(const Room& room, const GameState& s, unsigned long long seq) {
+inline std::string state(const Room& room, const GameState& s, bool started,
+                         unsigned long long seq) {
     std::string out;
     out.reserve(1400);
 
@@ -105,6 +106,11 @@ inline std::string state(const Room& room, const GameState& s, unsigned long lon
     out += "\"phase\":\"";
     out += roomPhaseName(room.phase());
     out += "\",\"roundNumber\":" + std::to_string(s.round.roundNumber);
+    // `started` dice si la sala tiene partida en marcha. Un cliente que se
+    // queda mirando el vestíbulo lo necesita: sin él no distingue "el motor
+    // está parado" de "el motor va más lento de lo normal".
+    out += ",\"started\":";
+    out += started ? "true" : "false";
     out += ",\"gameTime\":" +
            std::to_string(static_cast<long long>(s.round.gameTime * 1000.0f));
     out += ",\"roundOver\":";

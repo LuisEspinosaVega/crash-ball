@@ -291,7 +291,7 @@ WebSocket en el mismo puerto que el HTTP. Todos los mensajes son JSON en texto.
 
 ```jsonc
 {"type":"STATE","room":"X8TUV","seq":1024,
- "round":{"phase":"playing","roundNumber":1,"gameTime":12345,
+ "round":{"phase":"playing","started":true,"roundNumber":1,"gameTime":12345,
           "roundOver":false,"matchOver":false,"winner":-1,"matchWinner":-1,
           "countdown":0,"roundsToWin":3,"startHealth":15},
  "players":[{"seat":0,"name":"Ana","bot":false,"present":true,"alive":true,
@@ -301,8 +301,9 @@ WebSocket en el mismo puerto que el HTTP. Todos los mensajes son JSON en texto.
 ```
 
 `seq` es monótono por sala: un cliente que recibe algo desordenado lo descarta.
-Unidades: `round.gameTime` va en **milisegundos**; `round.countdown` va en
-**segundos** (tiempo restante de la pantalla de resultado).
+`started` dice si el motor de esa sala está simulando: `false` en el vestíbulo,
+`true` en cuanto hay partida. Unidades: `round.gameTime` va en **milisegundos**;
+`round.countdown` va en **segundos** (tiempo restante de la pantalla de resultado).
 
 ```jsonc
 {"type":"ERROR","code":"ROOM_FULL","message":"La sala esta llena"}
@@ -344,7 +345,10 @@ con tu vida y tu marcador, y al volver te lo devuelve. Quien no vuelve libera el
 muro a los 2 min.
 
 **Keepalive.** Ping cada 10 s y cierre a los 35 s sin tráfico: un socket zombi
-(ordenador apagado, wifi que se cayó) no bloquea un asiento indefinidamente.
+(ordenador apagado, wifi que se cayó) no bloquea un asiento indefinidamente. La
+vivacidad se mide con un contador de tráfico del socket, no con "último mensaje
+de texto recibido": si no, un espectador que no pulsa nada —que solo contesta
+pongs— sería echado a los 35 s estando perfectamente vivo.
 
 **Espectadores a 10 Hz.** Quien no tiene muro no necesita 60 instantáneas por
 segundo. Los jugadores sí, siempre.

@@ -20,6 +20,7 @@
 
 #include "net.h"
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -208,6 +209,20 @@ public:
     // kWaitForever keeps a WebSocket open for as long as the player wants.
     void setReceiveWait(int millis) { readWaitMs_ = millis; }
 
+    /**
+     * Contador de tráfico entrante. Sube con cada recv() con éxito, Includes
+     * pong y ping, no solo texto.
+     *
+     * Hace falta porque recvText() se queda bloqueado dentro del socket
+     * consumiendo tramas de control: un cliente que solo contesta pings nunca
+     * "sale" de recvText, así que el hilo de lectura no puede marcarlo como
+     * activo. Con este contador el keepalive puede distinguir "callado pero
+     * vivo" de "zombi" sin depender de que el jugador pulse nada.
+     */
+    unsigned long long activity() const {
+        return activity_.load(std::memory_order_relaxed);
+    }
+
     // ─── HTTP upgrade ──────────────────────────────────────────────
 
     // Blocks until one complete HTTP request header block has arrived. Any
@@ -377,6 +392,7 @@ private:
 
     net::socket_t sock_ = net::kInvalidSocket;
     int readWaitMs_ = net::kWaitForever;
+    std::atomic<unsigned long long> activity_{0};
     std::string in_;        // received but unconsumed bytes
     std::string fragment_;  // accumulates continuation frames
 
@@ -394,6 +410,7 @@ private:
             if (n < 0 && net::wouldBlock()) return false;
             return false;
         }
+        activity_.fetch_add(1, std::memory_order_relaxed);
         in_.append(buf, static_cast<size_t>(n));
         return true;
     }

@@ -11,6 +11,9 @@
 // First non-flag argument is the port, the second is the host. Flags may come
 // anywhere: `smoke-test.mjs --rooms 8080` and `smoke-test.mjs 8080 --rooms`
 // both work, which matters when you are iterating on one suite.
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
 const positional = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 const PORT = positional[0] ? Number(positional[0]) : 8080;
 const HOST = positional[1] || '127.0.0.1';
@@ -674,6 +677,80 @@ async function testMultiplayer() {
     if (fifth) { try { fifth.ws.close(); } catch { /* closed */ } }
 }
 
+// ─── Un cliente lento no puede congelar la partida ────────────────
+//
+// El fallo que motivó el rediseño del transporte: el hilo de juego escribía en
+// el socket con un timeout de 2 s, así que un cliente con la pestaña en
+// segundo plano paralelaba la arena para todos. Aquí se reproduce exactamente
+// eso —un socket que acepta la conexión y luego deja de leer— y se mide que los
+// demás siguen recibiendo instantáneas a su ritmo.
+
+function openSilencedSocket() {
+    // A propósito un socket en crudo: la API WebSocket de Node sigue leyendo
+    // sola, y lo que necesitamos es un cliente que deje de hacerlo.
+    const net = require('node:net');
+    return new Promise((resolve, reject) => {
+        const socket = net.connect(PORT, HOST, () => {
+            const key = require('node:crypto').randomBytes(16).toString('base64');
+            socket.write(
+                `GET / HTTP/1.1\r\nHost: ${HOST}:${PORT}\r\n` +
+                'Upgrade: websocket\r\nConnection: Upgrade\r\n' +
+                `Sec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`);
+
+            const onHandshake = (chunk) => {
+                if (!chunk.toString('latin1').includes('\r\n\r\n')) return;
+                socket.removeListener('data', onHandshake);
+
+                // JOIN enmascarado a mano (los clientes→servidor siempre lo van).
+                const payload = Buffer.from(JSON.stringify({ type: 'JOIN', name: 'Fantasma' }));
+                const mask = Buffer.from([9, 8, 7, 6]);
+                const masked = Buffer.from(payload.map((b, i) => b ^ mask[i % 4]));
+                socket.write(Buffer.concat([
+                    Buffer.from([0x81, 0x80 | payload.length]), mask, masked]));
+
+                // Y a partir de aquí: ni una lectura más.
+                socket.pause();
+                resolve(socket);
+            };
+            socket.on('data', onHandshake);
+        });
+        socket.on('error', reject);
+    });
+}
+
+async function testSlowClient() {
+    let reader;
+    let ghost;
+    try {
+        reader = await openClient('Observador');
+    } catch (err) {
+        check('a stalled client can be set up', false, String(err));
+        return;
+    }
+
+    try {
+        ghost = await openSilencedSocket();
+    } catch (err) {
+        check('a stalled client can be set up', false, String(err));
+        reader.ws.close();
+        return;
+    }
+    check('a stalled client can be set up', true);
+
+    // Deja que la congestión llene los búferes del socket mudo.
+    await sleep(3000);
+    const before = reader.states.length;
+    await sleep(4000);
+    const received = reader.states.length - before;
+    const rate = received / 4;
+
+    check('a client that stopped reading does not stall the match',
+          rate > 40, `${rate.toFixed(0)} instantáneas/s para el resto`);
+
+    try { ghost.destroy(); } catch { /* already gone */ }
+    try { reader.ws.close(); } catch { /* closed */ }
+}
+
 // ─── Round and match lifecycle ─────────────────────────────────────
 //
 // Verifies the pieces that only show up over time: a round actually ends with
@@ -833,6 +910,8 @@ async function testLifecycle() {
     await testHttp();
     console.log('');
     await testGame();
+    console.log('');
+    await testSlowClient();
     console.log('');
     await testMultiplayer();
     console.log('');
