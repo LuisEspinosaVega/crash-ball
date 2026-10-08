@@ -41,12 +41,26 @@ CB.arena = (function () {
 
         cameraBase: { y: 420, z: 420 },
         fov: 45,
+        // Giro de cámara por asiento, en radianes. La idea: la pared del
+        // jugador queda SIEMPRE abajo del encuadre, mirando de frente. Quien
+        // defiende el muro derecho ve la arena girada 180°, no de través.
         seatColors: ['#00e5ff', '#ff4081', '#7c4dff', '#00c853'],
+        // cameraYaw = giro de la cámara alrededor del centro, para que el muro
+        // del jugador quede SIEMPRE en primer plano (abajo del encuadre).
+        //
+        // La cuenta: el juego va de (x,y) a (x, -y) en el mundo, así que la
+        // cámara neutra (yaw 0) se sitúa en worldZ = +d, es decir, del lado del
+        // muro "abajo" del juego. Al girarla, el muro más cercano a la cámara es
+        // el que toca:
+        //   yaw 0     → muro abajo    (seat 3)
+        //   yaw π/2   → muro derecha  (seat 2)   cámara en worldX = +d
+        //   yaw π     → muro arriba   (seat 1)
+        //   yaw 3π/2  → muro izquierda (seat 0)  cámara en worldX = -d
         seats: [
-            { wall: 'left', label: 'izquierda', slide: 'y' },
-            { wall: 'top', label: 'arriba', slide: 'x' },
-            { wall: 'right', label: 'derecha', slide: 'y' },
-            { wall: 'bottom', label: 'abajo', slide: 'x' }
+            { wall: 'left', label: 'izquierda', slide: 'y', cameraYaw: Math.PI * 1.5 },
+            { wall: 'top', label: 'arriba', slide: 'x', cameraYaw: Math.PI },
+            { wall: 'right', label: 'derecha', slide: 'y', cameraYaw: Math.PI * 0.5 },
+            { wall: 'bottom', label: 'abajo', slide: 'x', cameraYaw: 0 }
         ]
     };
 
@@ -57,7 +71,8 @@ CB.arena = (function () {
         camera: null,
         renderer: null,
         clock: null,
-        ready: false
+        ready: false,
+        cameraYaw: 0     // giro actual; lo decide tu asiento
     };
 
     const entities = { paddles: [], balls: [] };
@@ -215,6 +230,25 @@ CB.arena = (function () {
         }
     }
 
+    /**
+     * Coloca la cámara para el asiento del jugador: siempre de frente a su muro,
+     * con su pala abajo y la arena abriéndose hacia arriba.
+     *
+     * Sin esto la cámara es fija y quien defiende el muro izquierdo juega con la
+     * pala a un lado y la pelota entrando de perfil, que es jugablemente mal.
+     * Girar el escenario entero en vez de mover la cámara deja intactos el HUD,
+     * las coordenadas del servidor y el mapeo de entrada: solo cambia desde
+     * dónde se mira.
+     */
+    function applyCameraForSeat(seat) {
+        const rotation = seat >= 0 && seat < CONFIG.seats.length
+            ? CONFIG.seats[seat].cameraYaw
+            : 0;
+        if (world.cameraYaw === rotation) return;
+        world.cameraYaw = rotation;
+        onWindowResize();
+    }
+
     /** Mantiene la arena entera visible; en pantallas estrechas aleja la cámara. */
     function onWindowResize() {
         if (!world.camera || !world.renderer) return;
@@ -226,7 +260,19 @@ CB.arena = (function () {
         world.camera.aspect = aspect;
         // Con aspect < 1.4 el encuadre horizontal aprieta: se separa la cámara.
         const pullBack = aspect < 1.4 ? Math.min(1.4 / Math.max(aspect, 0.45), 2.6) : 1;
-        world.camera.position.set(0, CONFIG.cameraBase.y * pullBack, CONFIG.cameraBase.z * pullBack);
+
+        // La cámara se coloca en el radio del yaw alrededor del centro de la
+        // arena. Ojo: hay que girar el VECTOR de posición a mano. Usar
+        // camera.rotateY() solo orienta la cámara, no la mueve, y por eso el
+        // muro quedaba de lado en lugar de enfrente.
+        const distance = CONFIG.cameraBase.y * pullBack;
+        const yaw = world.cameraYaw;
+        world.camera.position.set(
+            distance * Math.sin(yaw),
+            distance,
+            distance * Math.cos(yaw)
+        );
+        world.camera.up.set(0, 1, 0);
         world.camera.lookAt(0, 0, 0);
         world.camera.updateProjectionMatrix();
         world.renderer.setSize(width, height);
@@ -744,6 +790,9 @@ CB.arena = (function () {
         latest.players = [];
         latest.balls = [];
         session.mySeat = -1;
+        // Sin muro no hay desde dónde mirar: la cámara vuelve a su sitio, que si
+        // no el menú y el vestíbulo saldrían torcidos de la última partida.
+        applyCameraForSeat(-1);
         lastSentMove = null;
         dashReadyAt = 0;
         lastDashLabel = '';
@@ -775,6 +824,7 @@ CB.arena = (function () {
     function setSeat(seat, name) {
         session.mySeat = typeof seat === 'number' ? seat : -1;
         session.myName = name || session.myName;
+        applyCameraForSeat(session.mySeat);
         bindTouch();
         updateSeatLabel();
     }
@@ -865,6 +915,21 @@ CB.arena = (function () {
         world.ready = false;
     }
 
+    /**
+     * Dónde cae en pantalla la pala de un asiento, en píxeles. Solo para
+     * pruebas: comprueba que la cámara deja el muro de cada jugador abajo del
+     * encuadre, en vez de de lado.
+     */
+    function paddleScreenPosition(seat) {
+        const entity = entities.paddles[seat];
+        if (!entity || !entity.mesh.visible || !world.camera) return null;
+        const projected = entity.mesh.position.clone().project(world.camera);
+        return {
+            x: Math.round((projected.x * 0.5 + 0.5) * window.innerWidth),
+            y: Math.round((-projected.y * 0.5 + 0.5) * window.innerHeight)
+        };
+    }
+
     function bind() {
         window.addEventListener('resize', onWindowResize);
         window.addEventListener('keydown', onKeyDown);
@@ -891,6 +956,7 @@ CB.arena = (function () {
         animate: animate,
         teardown: teardown,
         updateSeatLabel: updateSeatLabel,
-        refreshTouchControls: bindTouch
+        refreshTouchControls: bindTouch,
+        paddleScreenPosition: paddleScreenPosition
     };
 })();

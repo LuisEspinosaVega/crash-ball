@@ -178,6 +178,20 @@ CB.menu = (function () {
         return row;
     }
 
+    /**
+     * Abre o cierra un subformulario. Solo uno a la vez: abrir el de código
+     * cierra el de crear, y al revés.
+     *
+     * Devuelve true si ha quedado abierto, para poder enfocar el campo
+     * correspondiente.
+     */
+    function togglePanel(which) {
+        const target = which === 'create' ? el('panel-create') : el('panel-code');
+        const wasHidden = !!target && target.classList.contains('hidden');
+        showPanel(wasHidden ? which : null);
+        return wasHidden;
+    }
+
     /** Muestra uno de los subformularios del menú, o ninguno. */
     function showPanel(which) {
         show(el('panel-create'), which === 'create');
@@ -422,15 +436,14 @@ CB.menu = (function () {
 
         const create = el('btn-create');
         if (create) create.addEventListener('click', function () {
-            showPanel(show(el('panel-create')) ? null : 'create');
+            togglePanel('create');
         });
 
         const openCode = el('btn-open-code');
         if (openCode) openCode.addEventListener('click', function () {
-            const willOpen = !show(el('panel-code'));
-            showPanel(willOpen ? 'code' : null);
+            const opened = togglePanel('code');
             const input = el('input-code');
-            if (willOpen && input) input.focus();
+            if (opened && input) input.focus();
         });
 
         const createGo = el('btn-create-go');

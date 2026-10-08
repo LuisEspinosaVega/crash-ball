@@ -98,6 +98,18 @@ URL: si alguien abre el enlace y pega el código, entra.
 
 En móvil aparecen botones táctiles grandes abajo.
 
+### La cámara es siempre de frente
+
+Da igual qué muro te toque: **tu muro queda siempre abajo del encuadre**, mirando
+de frente, y la arena se abre hacia arriba. Quien defiende el muro izquierdo ve
+el escenario girado, no la pala a un lado.
+
+El servidor manda las coordenadas de siempre; el giro ocurre solo en el cliente,
+al colocar la cámara. Eso deja intactos el HUD, la interpolación y el mapeo de las
+teclas, y evita que un cambio de cámara afecte a la física.
+
+Los espectadores (quien no tiene muro) ven la vista neutra.
+
 ---
 
 ## Reglas
@@ -174,6 +186,8 @@ space-ball/
 ├── tools/
 │   ├── smoke-test.mjs    # protocolo, multijugador, salas y ciclo de partida
 │   ├── browser-test.mjs  # menú y partida en Chrome headless real
+│   ├── camera-test.mjs   # el muro del jugador queda de frente en 4 asientos
+│   ├── click-debug.mjs   # diagnóstico de botones con clics de ratón reales
 │   └── shots.mjs         # capturas de cada pantalla, para revisar el diseño
 ├── legacy/               # copia del árbol original, antes de las correcciones
 ├── CMakeLists.txt
@@ -379,9 +393,16 @@ node tools/smoke-test.mjs 8080 --rooms
 # Navegador real: menú, creación de sala, HUD en vivo, teclado, errores de consola
 node tools/browser-test.mjs http://127.0.0.1:8080/
 
+# La cámara pone el muro de cada jugador abajo del encuadre, en los 4 asientos
+node tools/camera-test.mjs http://127.0.0.1:8080/
+
 # Capturas de menú, vestíbulo, chat, partida y pausa (para mirar el diseño)
 node tools/shots.mjs http://127.0.0.1:8080/ ./capturas
 ```
+
+Los tests de navegador se complemented: `click-debug.mjs` comprueba los botones
+con clics de ratón reales en vez de llamar al manejador a mano, que es como se
+detectó un menú cuyos botones no hacían nada.
 
 Y sin navegador de por medio, para lo que no depende del cliente:
 
@@ -399,6 +420,7 @@ Estado actual, medido sobre esta build (MSVC, Windows, `easy`, 1 ronda):
 |-------|-----------|
 | `smoke-test.mjs` | **83/83** |
 | `browser-test.mjs` | **26/26** |
+| `camera-test.mjs` | **4/4** |
 | `server.exe --selftest` | **8/8** |
 
 El smoke test tiene dos fases muy distintas en duración: la de salas y protocolo
