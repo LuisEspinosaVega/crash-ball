@@ -186,6 +186,7 @@ space-ball/
 ├── tools/
 │   ├── smoke-test.mjs    # protocolo, multijugador, salas y ciclo de partida
 │   ├── browser-test.mjs  # menú y partida en Chrome headless real
+│   ├── input-test.mjs    # teclas reales y delay de respuesta (4 asientos)
 │   ├── camera-test.mjs   # el muro del jugador queda de frente en 4 asientos
 │   ├── click-debug.mjs   # diagnóstico de botones con clics de ratón reales
 │   └── shots.mjs         # capturas de cada pantalla, para revisar el diseño
@@ -273,7 +274,10 @@ WebSocket en el mismo puerto que el HTTP. Todos los mensajes son JSON en texto.
 {"type":"INPUT","move":-1}     // -1 | 0 | 1 — estado mantenido, no un pulso
 {"type":"DASH"}
 {"type":"RESTART"}
-{"type":"PING","t":1234}
+
+// Latido. `t` vuelve tal cual en el PONG, sin truncar, así que sirve tanto
+// performance.now() como Date.now().
+{"type":"PING","t":1791484636850}
 ```
 
 **Servidor → cliente**
@@ -369,8 +373,25 @@ pongs— sería echado a los 35 s estando perfectamente vivo.
 segundo. Los jugadores sí, siempre.
 
 **Interpolación con retraso.** El cliente guarda las últimas instantáneas y dibuja
-el instante *hace 100 ms*, interpolando entre las dos muestras que lo rodean.
-Con la tasa de red justa eso quita los tirones sin añadir latencia perceptible.
+el instante *hace un rato*, interpolando entre las dos muestras que lo rodean.
+El retraso se **mide contra el ping real**: en red de casa se queda en 100 ms,
+que quita los tirones; con VPN o túnel baja al mínimo, porque pagar 100 ms de
+retraso encima de 200 ms de red deja el control blandísimo.
+
+**Predicción local de la pala propia.** El resto de palas y las pelotas se dibujan
+como llegan, pero la tuya se avanza aquí con la misma velocidad y el mismo tope
+que el servidor, y luego se corrige suavemente hacia lo que él confirme (o de
+un salto si el error es grande). El servidor sigue siendo la autoridad: esto solo
+adelanta lo que ya va a decir. Es lo que hace que la pala responda **al instante**
+en vez de esperar un viaje de ida y vuelta, que es lo que más se nota con
+latencia alta.
+
+**Controles que siguen a la pantalla.** Al girar la cámara, la pantalla se
+invierte en algunos asientos: ahí la flecha derecha equivale a mover el muro en
+sentido negativo. Cada asiento lleva su `invertInput`, de modo que la tecla que
+pulsas mueva siempre la pala hacia donde la ves. Se comprueba en los cuatro
+asientos con `input-test.mjs`, que manda teclas reales y lee el `move` que sale
+hacia el servidor.
 
 **Reconexión con espera creciente** y reconsideration inmediata al volver a la
 pestaña, para no gastar la batería del móvil en segundo plano.
@@ -393,6 +414,10 @@ node tools/smoke-test.mjs 8080 --rooms
 # Navegador real: menú, creación de sala, HUD en vivo, teclado, errores de consola
 node tools/browser-test.mjs http://127.0.0.1:8080/
 
+# Controles: con teclado real, la flecha derecha va a la derecha en los 4
+# asientos, y el predictor responde rápido
+node tools/input-test.mjs http://127.0.0.1:8080/
+
 # La cámara pone el muro de cada jugador abajo del encuadre, en los 4 asientos
 node tools/camera-test.mjs http://127.0.0.1:8080/
 
@@ -400,9 +425,11 @@ node tools/camera-test.mjs http://127.0.0.1:8080/
 node tools/shots.mjs http://127.0.0.1:8080/ ./capturas
 ```
 
-Los tests de navegador se complemented: `click-debug.mjs` comprueba los botones
+Los tests de navegador se complementan: `click-debug.mjs` comprueba los botones
 con clics de ratón reales en vez de llamar al manejador a mano, que es como se
-detectó un menú cuyos botones no hacían nada.
+detectó un menú cuyos botones no hacían nada. `input-test.mjs` hace lo propio con
+el teclado, porque saltarse el ratón y el teclado reales ya dio dos falsos verdes
+seguidos.
 
 Y sin navegador de por medio, para lo que no depende del cliente:
 
@@ -420,6 +447,7 @@ Estado actual, medido sobre esta build (MSVC, Windows, `easy`, 1 ronda):
 |-------|-----------|
 | `smoke-test.mjs` | **83/83** |
 | `browser-test.mjs` | **26/26** |
+| `input-test.mjs` | **19/19** |
 | `camera-test.mjs` | **4/4** |
 | `server.exe --selftest` | **8/8** |
 

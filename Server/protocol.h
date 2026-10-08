@@ -40,6 +40,21 @@ inline int fieldInt(const json::Value& message, const char* key, int fallback) {
     return static_cast<int>(field->asNumber(static_cast<double>(fallback)));
 }
 
+/**
+ * Devuelve el campo tal cual, como texto numérico, sin truncarlo a int.
+ *
+ * Hace falta para el eco del PING: los clientes usan marcas de tiempo reales
+ * (Date.now() va de 1,7e12), y castearlas a int desbordaba y devolvía un
+ * número sin sentido, con el que el ping medido salía absurdo.
+ */
+inline std::string fieldNumberText(const json::Value& message, const char* key) {
+    const json::Value* field = findField(message, key);
+    if (!field || !field->isNumber()) return "0";
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%.0f", field->number);
+    return std::string(buf);
+}
+
 inline bool fieldBool(const json::Value& message, const char* key, bool fallback) {
     const json::Value* field = findField(message, key);
     if (!field) return fallback;

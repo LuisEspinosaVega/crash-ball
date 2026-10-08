@@ -30,9 +30,20 @@ CB.arena = (function () {
         paddleBevel: 1.5,
         ballRadius: 8,
 
-        // Retardo de interpolación. 100 ms es el punto dulce: por debajo se ve
-        // el efecto de los saltos de red, por encima se nota la latencia.
+        // Deben coincidir con las constantes del servidor (game_state.h). Si
+        // divergen, el predictor acumularía error hasta que la corrección lo
+        // teletransporte de golpe.
+        paddleSpeed: 420,      // PADDLE_SPEED
+        posLimit: 124,         // ARENA_HALF - PADDLE_HALF_LEN
+
+        // Retardo de interpolación. 100 ms es el punto dulce en una red de casa:
+        // por debajo se ve el efecto de los saltos de red, por encima se nota
+        // la latencia. Por VPN o túnel el RTT se dispara, así que el retardo se
+        // mide en tiempo real (ver ping.js) y se queda en el mínimo: el
+        // predictor local cubre lo que la red no da.
         interpolationDelayMs: 100,
+        interpolationDelayMinMs: 45,
+        interpolationDelayMaxMs: 160,
         // Suavizado extra al perseguir la muestra, por si el buffer se queda
         // corto (p. ej. tras una pausa larga de la pestaña).
         catchUpLerpRate: 18,
@@ -57,10 +68,14 @@ CB.arena = (function () {
         //   yaw π     → muro arriba   (seat 1)
         //   yaw 3π/2  → muro izquierda (seat 0)  cámara en worldX = -d
         seats: [
-            { wall: 'left', label: 'izquierda', slide: 'y', cameraYaw: Math.PI * 1.5 },
-            { wall: 'top', label: 'arriba', slide: 'x', cameraYaw: Math.PI },
-            { wall: 'right', label: 'derecha', slide: 'y', cameraYaw: Math.PI * 0.5 },
-            { wall: 'bottom', label: 'abajo', slide: 'x', cameraYaw: 0 }
+            { wall: 'left', label: 'izquierda', slide: 'y', cameraYaw: Math.PI * 1.5,
+              invertInput: true },
+            { wall: 'top', label: 'arriba', slide: 'x', cameraYaw: Math.PI,
+              invertInput: true },
+            { wall: 'right', label: 'derecha', slide: 'y', cameraYaw: Math.PI * 0.5,
+              invertInput: false },
+            { wall: 'bottom', label: 'abajo', slide: 'x', cameraYaw: 0,
+              invertInput: false }
         ]
     };
 
@@ -431,6 +446,94 @@ CB.arena = (function () {
     // ─── Interpolación ─────────────────────────────────────────────
 
     /**
+     * Predicción de la pala propia.
+     *
+     * La pala del jugador no se dibuja como llega del servidor: se avanza aquí
+     * con la misma velocidad y el mismo tope que usa el motor, y luego se
+     * corrige gently hacia lo que confirme el servidor. Es lo que quita la
+     * sensación de "lag" al mover, porque la respuesta a la tecla es inmediata
+     * en vez de esperar un viaje de ida y vuelta.
+     *
+     * El servidor sigue siendo la autoridad: esto solo Adelanta lo que él ya
+     * va a decir. Si la corrección se pasa de un umbral (por ejemplo,We've been
+     * interrupted — the server rejected our input), se teletransporta.
+     */
+    const prediction = {
+        valid: false,
+        x: 0,
+        y: 0,
+        // Correcciones suaves por debajo de este error; por encima, salto.
+        snapThreshold: 60,
+        // Proporción de error que se corrige en cada cuadro, para que el
+        // desfase con el servidor no se note de golpe.
+        correctRate: 0.12
+    };
+
+    /** Corrección hacia la posición que el servidor acaba de confirmar. */
+    function reconcile(seat, targetX, targetY) {
+        if (seat !== session.mySeat) return;
+
+        if (!prediction.valid) {
+            prediction.x = targetX;
+            prediction.y = targetY;
+            prediction.valid = true;
+            return;
+        }
+
+        const dx = targetX - prediction.x;
+        const dy = targetY - prediction.y;
+        if (Math.abs(dx) > prediction.snapThreshold ||
+            Math.abs(dy) > prediction.snapThreshold) {
+            prediction.x = targetX;
+            prediction.y = targetY;
+            return;
+        }
+        prediction.x += dx * prediction.correctRate;
+        prediction.y += dy * prediction.correctRate;
+    }
+
+    /**
+     * Avanza la predicción un cuadro. Usa los mismos números que el servidor
+     * (PADDLE_SPEED, POS_LIMIT) para que no se desvíe por el camino.
+     */
+    function stepPrediction(dt) {
+        if (!prediction.valid || session.mySeat < 0) return;
+
+        const move = lastSentMove;
+        if (!move) return;
+
+        const seat = CONFIG.seats[session.mySeat];
+        if (!seat) return;
+
+        const step = move * CONFIG.paddleSpeed * dt;
+        if (seat.slide === 'x') {
+            prediction.x = clamp(prediction.x + step, -CONFIG.posLimit, CONFIG.posLimit);
+        } else {
+            // El eje y del juego es el -Z del mundo; aquí se razona en y de
+            // juego, que es lo que manda el servidor.
+            prediction.y = clamp(prediction.y + step, -CONFIG.posLimit, CONFIG.posLimit);
+        }
+    }
+
+    /**
+     * Retardo de dibujo en uso, ajustado a la red real.
+     *
+     * El retardo tiene que tapar la irregularidad de la red, no la latencia: en
+     * una VPN o un túnel (100 ms de ida y vuelta o más) pagar 100 ms de retardo
+     * encima de 100 ms de red deja el control blandísimo. Por eso se mide el
+     * ping: con red buena se queda en el valor cómodo y con red mala baja al
+     * mínimo, porque el predictor local ya evita que la pala se quede quieta.
+     */
+    function currentDelay() {
+        const rtt = CB.net.state.pingMs || 0;
+        // Solo cuenta la mitad del RTT: el retardo existe para no dibujar el
+        // futuro, no para compensar el viaje de los datos que ya llegaron.
+        const wanted = rtt > 0 ? rtt * 0.5 : CONFIG.interpolationDelayMs;
+        return clamp(wanted, CONFIG.interpolationDelayMinMs,
+                     CONFIG.interpolationDelayMaxMs);
+    }
+
+    /**
      * Dibuja el instante `now - delay` interpolando entre las dos instantáneas
      * que lo rodean. Si no hay dos muestras (reconexión, primer frame) cae al
      * último estado conocido y suaviza hacia él.
@@ -438,7 +541,7 @@ CB.arena = (function () {
     function interpolate(dt) {
         if (buffer.frames.length === 0) return;
 
-        const renderAt = performance.now() - CONFIG.interpolationDelayMs;
+        const renderAt = performance.now() - currentDelay();
         let older = null;
         let newer = null;
 
@@ -477,10 +580,21 @@ CB.arena = (function () {
                 continue;
             }
 
-            const x = b ? a.x + (b.x - a.x) * t : a.x;
-            const y = b ? a.y + (b.y - a.y) * t : a.y;
+            let x = b ? a.x + (b.x - a.x) * t : a.x;
+            let y = b ? a.y + (b.y - a.y) * t : a.y;
 
             const alive = a.alive !== false && a.hp > 0;
+
+            // La pala propia no se dibuja donde llega, sino dondeseatribuye el
+            // predictor; así responde al instante. El resto van interpoladas.
+            if (seat === session.mySeat) {
+                reconcile(seat, x, y);
+                stepPrediction(dt);
+                if (prediction.valid) {
+                    x = prediction.x;
+                    y = prediction.y;
+                }
+            }
             entity.opacityTarget = alive ? 1 : 0.18;
             entity.glowTarget = !alive ? 0.05 : (a.dashing ? 1.5 : 0.5);
 
@@ -671,10 +785,23 @@ CB.arena = (function () {
 
     // ─── Entrada ───────────────────────────────────────────────────
 
+    /**
+     * Dirección que se envía al servidor, ya en coordenadas del juego.
+     *
+     * Al girar la cámara para dejar el muro del jugador delante, la pantalla se
+     * invierte en unos asientos: ahí "pulsar derecha" equivale a mover el muro
+     * en sentido negativo. `invertInput` de cada asiento lo corrige, para que
+     * la tecla que pulsas mueva siempre la pala hacia donde ves.
+     */
     function currentMove() {
-        let left = pressed.ArrowLeft || pressed.KeyA || touchState.left;
-        let right = pressed.ArrowRight || pressed.KeyD || touchState.right;
-        return (right ? 1 : 0) - (left ? 1 : 0);
+        const left = pressed.ArrowLeft || pressed.KeyA || touchState.left;
+        const right = pressed.ArrowRight || pressed.KeyD || touchState.right;
+        const screenMove = (right ? 1 : 0) - (left ? 1 : 0);
+
+        const seat = session.mySeat;
+        const invert = seat >= 0 && seat < CONFIG.seats.length
+            && CONFIG.seats[seat].invertInput;
+        return invert ? -screenMove : screenMove;
     }
 
     /** Envía INPUT solo cuando la dirección mantenida cambia (no por frame). */
@@ -827,6 +954,9 @@ CB.arena = (function () {
         applyCameraForSeat(session.mySeat);
         bindTouch();
         updateSeatLabel();
+        // El predictor arranca desde la posición real del servidor: si no, la
+        // pala daría un salto al sentarte.
+        prediction.valid = false;
     }
 
     function setConnected(value) {

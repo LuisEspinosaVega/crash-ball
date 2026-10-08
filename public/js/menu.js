@@ -95,7 +95,7 @@ CB.menu = (function () {
         const input = el('input-code');
         const code = normalizeCode(input ? input.value : '');
         if (code.length !== 5) {
-            CB.dom.toast('El código tiene 5 letras', 'bad');
+            CB.dom.toast('El código tiene 5 caracteres (letras o números)', 'bad');
             return;
         }
         CB.net.send({ type: 'ROOM_JOIN', code: code, name: playerName(),
@@ -108,10 +108,18 @@ CB.menu = (function () {
                       sessionId: CB.net.sessionId() });
     }
 
+    /**
+     * Limpia lo que el jugador teclea: mayúsculas y solo los símbolos que el
+     * servidor usa en los códigos (A-Z y 2-9).
+     *
+     * El 2-9 importa. Filtrando solo letras, cualquier código con dígito
+     * perdía el dígito al teclearlo y el JOIN salía con 4 caracteres, que el
+     * servidor rechaza con ROOM_NOT_FOUND sin más explicación.
+     */
     function normalizeCode(raw) {
         return String(raw || '')
             .toUpperCase()
-            .replace(/[^A-Z]/g, '')
+            .replace(/[^A-Z2-9]/g, '')
             .slice(0, 5);
     }
 

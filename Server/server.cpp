@@ -486,8 +486,10 @@ private:
         const std::string type = typeField->asString();
 
         if (type == "PING") {
+            // Se devuelve la marca tal cual, sin castear:Date.now() no cabe en
+            // un int y el cliente midía un RTT absurdo por culpa de eso.
             enqueue(client, "{\"type\":\"PONG\",\"t\":" +
-                                std::to_string(proto::fieldInt(message, "t", 0)) + "}");
+                                proto::fieldNumberText(message, "t") + "}");
         } else if (type == "JOIN" || type == "QUICK") {
             handleQuickJoin(message, client);
         } else if (type == "ROOMS") {
