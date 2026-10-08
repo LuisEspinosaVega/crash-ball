@@ -243,6 +243,45 @@ puerto en el router (redirección de puertos) y la partida viaja en claro. Para 
 partida entre amigos en una red doméstica vale; para Internet abierto, proxy con
 TLS.
 
+### Si no conecta: el juego te dice por qué
+
+Cuando el socket no puede abrirse, el juego **no se queda en silencio**. El
+cliente tiene un reloj de 7 s y distingue dos fallos que se parecen mucho pero se
+arreglan de forma distinta:
+
+| Qué pasa | Qué muestra | Qué hacer |
+|----------|-------------|-----------|
+| El socket se cayó estando conectado | «Se perdió la conexión con el servidor.» | Nada, reconecta solo |
+| El socket **nunca** abrió | «La página carga pero el socket no abre: o el servidor no está arrancado, o el túnel o proxy no reenvía el salto a WebSocket.» | Arranca el servidor, o cambia de túnel |
+
+La distinción importa porque un socket que no puede establecerse **no da ningún
+error en el navegador**: se queda en `CONNECTING` para siempre, sin `onerror` ni
+`onclose`. Sin el reloj, la interfaz no tenía nada que contar y se quedaba en
+«Reintentando…» indefinidamente, que es justo lo que pasó.
+
+Cuando la causa no puede saberse desde el navegador —y no se puede: «el servidor
+no está» y «el proxy no reenvía el salto» se ven igual—, el mensaje nombra las
+dos posibilidades en vez de culpar a una y mandar al jugador a mirar donde no
+es. Pista útil: **si la página carga, el servidor está bien**; lo que no llega es
+el salto.
+
+### Túneles de VS Code
+
+El túnel de puertos de VS Code (`*.devtunnels.ms`) **sirve el HTML pero no siempre
+reenvía el salto a WebSocket**. El síntoma es muy concreto: la página aparece
+entera, con el menú, y el indicador se queda en «Reconectando…» sin llegar nunca
+a conectar. Está reportado en
+[microsoft/vscode#190020](https://github.com/microsoft/vscode/issues/190020).
+
+No es culpa del servidor: verificado con `tools/proxy-test.mjs`, que lo pone
+detrás de un proxy inverso de verdad y el WebSocket sube sin problema (3/3). Si
+te pasa con el túnel, el juego no se puede jugar ahí y no hay ajuste que lo
+arregle; usa el nginx de arriba, `ngrok` con `--http2`, o `cloudflared`.
+
+Para distinguirlo rápido: si la página carga pero el socket no, el servidor
+está bien y el salto no llega. El juego ahora avisa de esto solo, en vez de
+quedarse cargando en silencio (ver «Aviso de conexión» más abajo).
+
 ---
 
 ## Protocolo
@@ -467,7 +506,18 @@ Estado actual, medido sobre esta build (MSVC, Windows, `easy`, 1 ronda):
 | `browser-test.mjs` | **26/26** |
 | `input-test.mjs` | **19/19** |
 | `camera-test.mjs` | **4/4** |
+| `proxy-test.mjs` | **3/3** |
+| `tunnel-test.mjs` | **3/3** |
+| `tunnel-ui-test.mjs` | **6/6** |
 | `server.exe --selftest` | **9/9** |
+
+`proxy-test.mjs` pone el servidor detrás de un proxy inverso real y comprueba que
+el WebSocket sube: separa "el servidor no vale" de "el túnel no reenvía el salto".
+`tunnel-test.mjs` y `tunnel-ui-test.mjs` comprueban el caso contrario, que es el
+que falla: un destino que acepta la conexión y no contesta nunca al handshake,
+que es lo que hace un túnel mal configurado. El navegador se queda en
+`CONNECTING` sin error ni cierre, así que sin el reloj del cliente el fallo sería
+invisible. `tunnel-ui-test.mjs` verifica que la interfaz explica la causa.
 
 `--selftest` incluye una comprobación del apagado: mide en milisegundos que el
 hilo lector se suelta al ver la bandera de parada. Es la única forma fiable de

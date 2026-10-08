@@ -27,6 +27,13 @@ CB.net = (function () {
     const BACKOFF_MS = [500, 1000, 2000, 4000, 8000];
     const SESSION_KEY = 'cb.sessionId';
 
+    // Cuánto se espera a que el socket abra antes de darlo por imposible. Un
+    // WebSocket que no puede establecerse (túnel que no reenvía el salto,
+    // proxy que corta la conexión) no dispara ni onopen ni onclose: se queda
+    // en CONNECTING para siempre. Sin este reloj la interfaz se queda
+    // indefinidamente en "reintentando…" sin decir por qué.
+    const OPEN_TIMEOUT_MS = 7000;
+
     const state = {
         socket: null,
         connected: false,
@@ -37,7 +44,13 @@ CB.net = (function () {
         pingTimer: null,
         reconnectTimer: null,
         paused: false,          // se pone true al ocultar la pestaña
-        pendingPing: 0
+        pendingPing: 0,
+        openTimer: null,
+        sawError: false,      // el último socket llegó a dar error
+        // Por qué no hay conexión, en palabras que se puedan arreglar. Vale la
+        // pena distinguir: 'nunca-abre' y 'se-cae' son fallos distintos con
+        // causas distintas, y el jugador no puede adivinarlo.
+        lastFailure: ''
     };
 
     /**
@@ -105,10 +118,51 @@ CB.net = (function () {
         return scheme + '//' + location.host;
     }
 
-    function setConnected(connected) {
-        if (state.connected === connected) return;
+    function setConnected(connected, reason) {
+        if (state.connected === connected && !reason) return;
         state.connected = connected;
-        emit('connection', { connected: connected, pingMs: state.pingMs });
+        state.lastFailure = connected ? '' : (reason || state.lastFailure);
+        emit('connection', {
+            connected: connected,
+            pingMs: state.pingMs,
+            // El motivo viaja con el evento para que la interfaz pueda decir
+            // algo útil en vez de un "reintentando…" infinito.
+            reason: state.lastFailure,
+            attempts: state.attempts
+        });
+    }
+
+    /**
+     * Texto que explica el fallo en lenguaje de "qué hago ahora".
+     *
+     * Se decide por lo que el navegador ya nos cuenta. Un WebSocket que no
+     * puede establecerse por un túnel o un proxy que no reenvían el salto no
+     * da error: se queda abriendo. Por eso el caso Interesting es "no abre",
+     * no "da error".
+     */
+    function failureText(reason, attempts) {
+        if (reason === 'never-opened') {
+            // Aquí NO se puede saber cuál de las dos cosas pasa: desde el
+            // navegador, "el servidor no está" y "el proxy no reenvía el salto a
+            // WebSocket" se ven igual: los dos son un socket que no abre. Por eso
+            // se nombran las dos, en vez de culpar a una y enviar al jugador a
+            // mirar donde no es. Fíjate en que la página (HTTP) sí se ve: eso
+            // descarta "no hay servidor" y señala al túnel o al proxy.
+            const secure = location.protocol === 'https:';
+            return secure
+                ? 'El servidor no acepta la conexión segura (wss). Si usas un túnel o ' +
+                  'proxy, comprueba que reenvía el salto a WebSocket; con HTTP sí ' +
+                  'funciona, con el salto no.'
+                : 'La página carga pero el socket no abre: o el servidor no está ' +
+                  'arrancado, o el túnel o proxy no reenvía el salto a WebSocket.';
+        }
+        if (reason === 'error') {
+            return 'Se perdió la conexión con el servidor.';
+        }
+        if (attempts > 3) {
+            return 'Sin conexión con el servidor. Reintentando…';
+        }
+        return 'Conectando…';
     }
 
     function connect() {
@@ -129,7 +183,23 @@ CB.net = (function () {
         }
         state.socket = socket;
 
+        // Un socket que no puede establecerse no lanza error ni cierra: se
+        // queda en CONNECTING. Este reloj convierte ese silencio en un motivo
+        // que la interfaz puede mostrar.
+        state.openTimer = window.setTimeout(function () {
+            if (state.socket !== socket) return;
+            if (socket.readyState === WebSocket.OPEN) return;
+            try { socket.close(); } catch (error) { /* ya está cerrando */ }
+            state.socket = null;
+            setConnected(false, 'never-opened');
+            scheduleReconnect();
+        }, OPEN_TIMEOUT_MS);
+
         socket.onopen = function () {
+            if (state.openTimer !== null) {
+                window.clearTimeout(state.openTimer);
+                state.openTimer = null;
+            }
             state.attempts = 0;
             state.everConnected = true;
             setConnected(true);
@@ -173,12 +243,21 @@ CB.net = (function () {
         };
 
         socket.onerror = function () {
-            // onclose llega siempre después y se encarga del reintento.
+            // onclose llega siempre después y se encarga del reintento. Aquí
+            // solo se anota que hubo error, para poder distinguirlo de un
+            // socket que simplemente nunca llegó a abrir.
+            state.sawError = true;
         };
 
         socket.onclose = function () {
+            if (state.openTimer !== null) {
+                window.clearTimeout(state.openTimer);
+                state.openTimer = null;
+            }
             if (state.socket === socket) state.socket = null;
-            setConnected(false);
+            const reason = state.sawError ? 'error' : 'closed';
+            state.sawError = false;
+            setConnected(false, reason);
             emit('closed', {});
             stopPings();
             if (!state.paused) scheduleReconnect();
@@ -272,6 +351,9 @@ CB.net = (function () {
         startPings: startPings,
         stopPings: stopPings,
         handleVisibility: handleVisibility,
-        shutdown: shutdown
+        shutdown: shutdown,
+        failureText: function (info) {
+            return failureText(info && info.reason, (info && info.attempts) || 0);
+        }
     };
 })();

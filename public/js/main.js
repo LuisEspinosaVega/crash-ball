@@ -89,7 +89,11 @@ window.CB = window.CB || {};
             if (info.connected) {
                 net.startPings();
             } else {
-                setText(el('connection-lost-detail'), 'Reintentando…');
+                // Se explica qué pasa en vez de un "reintentando…" eterno: si el
+                // socket nunca abre (túnel o proxy que no reenvía el salto) el
+                // jugador tiene que poder saberlo, porque no puede arreglarlo
+                // reintentando.
+                setText(el('connection-lost-detail'), net.failureText(info));
                 show(el('connection-lost'), true);
             }
         });
