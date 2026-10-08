@@ -173,7 +173,8 @@ space-ball/
 │   └── vendor/three.min.js  # Three.js r128 local (sin CDN)
 ├── tools/
 │   ├── smoke-test.mjs    # protocolo, multijugador, salas y ciclo de partida
-│   └── browser-test.mjs  # menú y partida en Chrome headless real
+│   ├── browser-test.mjs  # menú y partida en Chrome headless real
+│   └── shots.mjs         # capturas de cada pantalla, para revisar el diseño
 ├── legacy/               # copia del árbol original, antes de las correcciones
 ├── CMakeLists.txt
 └── Makefile              # atajos opcionales (requiere GNU Make, no CMake)
@@ -377,11 +378,28 @@ node tools/smoke-test.mjs 8080 --rooms
 
 # Navegador real: menú, creación de sala, HUD en vivo, teclado, errores de consola
 node tools/browser-test.mjs http://127.0.0.1:8080/
+
+# Capturas de menú, vestíbulo, chat, partida y pausa (para mirar el diseño)
+node tools/shots.mjs http://127.0.0.1:8080/ ./capturas
+```
+
+Y sin navegador de por medio, para lo que no depende del cliente:
+
+```bash
+./build/Release/server.exe --selftest
 ```
 
 `browser-test.mjs` lanza Chrome headless por el protocolo DevTools
 (`CHROME_PATH` para indicar otro binario) y guarda una captura para revisarla a
 ojo.
+
+Estado actual, medido sobre esta build (MSVC, Windows, `easy`, 1 ronda):
+
+| Suite | Resultado |
+|-------|-----------|
+| `smoke-test.mjs` | **83/83** |
+| `browser-test.mjs` | **26/26** |
+| `server.exe --selftest` | **8/8** |
 
 El smoke test tiene dos fases muy distintas en duración: la de salas y protocolo
 tarda unos segundos, y la de **ciclo de partida** puede tardar minutos porque las
@@ -402,7 +420,9 @@ node tools/smoke-test.mjs 8083
   hace falta `make`**: en Windows CMake genera un proyecto de Visual Studio y lo
   compila con MSBuild.
 - **Jugar**: un navegador con WebGL. Three.js va vendorizado; no se descarga
-  nada de internet.
+  nada de internet. En móvil aparecen controles táctiles.
+- **Sin dependencias**: ni npm, ni CMake externo, ni librerías de terceros. El
+  ejecutable solo necesita el sistema.
 - **Tests**: Node.js 22+ (por el `WebSocket` global).
 - **Opcional**: GNU Make, solo si quieres los atajos del `Makefile`.
 
